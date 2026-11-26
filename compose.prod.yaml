@@ -1,0 +1,119 @@
+name: ascending-pc
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-ascending_pc}
+      POSTGRES_USER: ${DB_USERNAME:-ascending}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ascending_net
+
+  backend:
+    image: ghcr.io/${GHCR_OWNER:-ascendingheat}/ascending-pc-backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_NAME: ${APP_NAME:-AscendingPC}
+      APP_ENV: production
+      APP_KEY: ${APP_KEY:?Set APP_KEY in .env}
+      REQUIRE_APP_KEY: "true"
+      APP_DEBUG: "false"
+      APP_URL: ${APP_URL:?Set APP_URL in .env}
+      ASSET_URL: ${ASSET_URL:-${APP_URL}}
+      LOG_CHANNEL: stderr
+      LOG_LEVEL: ${LOG_LEVEL:-warning}
+      DB_CONNECTION: pgsql
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE:-ascending_pc}
+      DB_USERNAME: ${DB_USERNAME:-ascending}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      FILESYSTEM_DISK: public
+      SESSION_DRIVER: database
+      CACHE_STORE: database
+      QUEUE_CONNECTION: database
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-${APP_URL}}
+      CORS_SUPPORTS_CREDENTIALS: ${CORS_SUPPORTS_CREDENTIALS:-false}
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:?Set MIDTRANS_SERVER_KEY in .env}
+      MIDTRANS_CLIENT_KEY: ${MIDTRANS_CLIENT_KEY:?Set MIDTRANS_CLIENT_KEY in .env}
+      MIDTRANS_IS_PRODUCTION: ${MIDTRANS_IS_PRODUCTION:-true}
+      MIDTRANS_IS_SANITIZED: "true"
+      MIDTRANS_IS_3DS: "true"
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_SEEDERS: "false"
+    volumes:
+      - backend_storage:/var/www/html/storage/app/public
+      - backend_framework:/var/www/html/storage/framework
+    healthcheck:
+      test: ["CMD-SHELL", "SCRIPT_NAME=/fpm-ping SCRIPT_FILENAME=/fpm-ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000 | grep -q pong"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    networks:
+      - ascending_net
+
+  frontend:
+    image: ghcr.io/${GHCR_OWNER:-ascendingheat}/ascending-pc-frontend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      ORIGIN: ${APP_URL:?Set APP_URL in .env}
+      INTERNAL_API_URL: http://gateway/api
+      BODY_SIZE_LIMIT: 26214400
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - ascending_net
+
+  gateway:
+    image: ghcr.io/${GHCR_OWNER:-ascendingheat}/ascending-pc-gateway:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-80}:80"
+    volumes:
+      - backend_storage:/var/www/html/storage/app/public:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/up || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - ascending_net
+
+volumes:
+  postgres_data:
+  backend_storage:
+  backend_framework:
+
+networks:
+  ascending_net:
+    driver: bridge

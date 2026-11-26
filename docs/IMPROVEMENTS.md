@@ -173,6 +173,8 @@ This document captures all security vulnerabilities, runtime bugs, architectural
 - Resolve all current `svelte-check` TypeScript errors so `npm run check` passes with 0 errors.
 - Migrate deprecated `$app/stores` (`$page`) to `$app/state` (`page`) and gradually adopt Svelte 5 runes (`$props`, `$state`, `$derived`) and SSR-friendly `+page.ts` `load` functions.
 
-### 35. [Quality Assurance] Build Automated Backend (Pest) & Frontend (`svelte-check` + Playwright) CI Pipeline
-- **Backend (`backend-API/tests/`)**: Uncomment `RefreshDatabase` in `tests/Pest.php`, create model factories (`VendorFactory`, `ProductFactory`, `ParentOrderFactory`), and add feature tests covering Auth, Vendor RBAC, Product CRUD + gallery deletion security, Cart stock bounds, Multi-Vendor Checkout concurrency, and Midtrans webhook signature & idempotency.
-- **CI/CD (`.github/workflows/ci.yml`)**: Run `composer install` + `php artisan test` + `./vendor/bin/pint --test` for `backend-API`, and `npm ci` + `npm run check` + `npm run lint` + `npm run build` for `frontend-user` on every push and pull request.
+### 35. [Resolved] [Quality Assurance] Automated Backend (Pest), Docker Deployment & GitHub Actions CI/CD Pipeline
+- **Resolution**:
+  - Enabled `RefreshDatabase` in `backend-API/tests/Pest.php` and added `backend-API/tests/Feature/MarketplaceApiTest.php` covering `/up`, auth + partial profile update + token revocation, vendor onboarding & RBAC, product CRUD + gallery path-traversal protection, cart stock bounds, Midtrans webhook signature/amount verification & idempotent expiry stock restoration, and `DatabaseSeeder`.
+  - Added multi-stage Docker deployment (`backend-API/Dockerfile`, `frontend-user/Dockerfile`, `docker/nginx/Dockerfile`, `compose.yaml`, `compose.prod.yaml`, `.env.docker.example`) and GitHub Actions CI/CD workflow (`.github/workflows/ci-cd.yml`) with SQLite + PostgreSQL 16 test matrices, SvelteKit build verification, GHCR publishing, and optional SSH deployment.
+  - Populated root `.gitignore` and made `backend-API/config/cors.php` environment-driven (`CORS_ALLOWED_ORIGINS`, `CORS_SUPPORTS_CREDENTIALS`).

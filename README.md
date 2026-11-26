@@ -14,6 +14,7 @@ Comprehensive technical documentation for the entire monorepo is organized under
 | [**Database Reference** (`docs/DATABASE.md`)](./docs/DATABASE.md) | Entity-Relationship diagram (`erDiagram`), table-by-table column specifications, JSON `details` schema, Eloquent relationships, accessors, seeders, and schema discrepancies. |
 | [**REST API Reference** (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md) | Complete endpoint catalog (`/api/*`), auth requirements, validation rules, request/response JSON examples, status codes, and Midtrans webhook verification. |
 | [**Frontend Guide** (`docs/FRONTEND.md`)](./docs/FRONTEND.md) | SvelteKit route map, UI component library, Svelte stores (`auth`, `user`, `cart`, `wishlist`), API integration matrix, styling setup, and legacy/orphaned file inventory. |
+| [**Deployment & CI/CD** (`docs/DEPLOYMENT.md`)](./docs/DEPLOYMENT.md) | Docker Compose stack (`db`, `backend`, `frontend`, `gateway`), GHCR production images, environment reference, and GitHub Actions CI/CD workflow. |
 | [**Audit & Improvement Roadmap** (`docs/IMPROVEMENTS.md`)](./docs/IMPROVEMENTS.md) | Prioritized security, backend, database, frontend, UX, and DevOps audit findings (`P0`–`P3`) with exact `file:line` locations and actionable fixes. |
 
 ---
@@ -113,12 +114,24 @@ ascending-pc/
 
 ## Local Development Quickstart
 
+### Option A: Docker Compose (Recommended)
+
+```bash
+cp .env.docker.example .env
+docker compose up --build -d
+# App & API available at http://localhost:8080 (healthcheck: http://localhost:8080/up)
+```
+
+See [Deployment & CI/CD Guide](./docs/DEPLOYMENT.md) for production GHCR deployment and GitHub Actions configuration.
+
+### Option B: Manual Local Setup
+
 ### Prerequisites
 
-- **PHP** `8.4+` (or run `composer update` under PHP `8.2`/`8.3` to regenerate `composer.lock`) with `pdo_pgsql` / `pdo_sqlite`, `mbstring`, `openssl`, `gd`/`fileinfo` extensions
+- **PHP** `8.4+` with `pdo_pgsql` / `pdo_sqlite`, `mbstring`, `openssl`, `gd`/`fileinfo` extensions
 - **Composer** `2.x`
-- **Node.js** `20+` and **npm** `10+`
-- **PostgreSQL** `15+` (or SQLite for quick local testing)
+- **Node.js** `22+` and **npm** `10+`
+- **PostgreSQL** `16+` (or SQLite for quick local testing)
 - **Midtrans Sandbox Account** (Server Key & Client Key)
 
 ### 1. Backend Setup (`backend-API`)

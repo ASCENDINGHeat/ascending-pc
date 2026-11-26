@@ -1,0 +1,20 @@
+# Operating system & IDE metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Root environment files (keep templates tracked)
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# Local Docker volume / bind data
+postgres-data/
+docker-data/
+
+# Accidental root dependency installs
+node_modules/

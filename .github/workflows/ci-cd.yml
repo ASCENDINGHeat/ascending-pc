@@ -1,0 +1,258 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - master
+      - staging
+      - "dev/**"
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - master
+      - staging
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  # ===========================================================================
+  # 1. Backend CI — PHP 8.4, Pest Feature Suite (SQLite + PostgreSQL 16)
+  # ===========================================================================
+  backend-ci:
+    name: Backend API (PHP 8.4 + Pest)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ascending_pc_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d ascending_pc_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    defaults:
+      run:
+        working-directory: backend-API
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo_pgsql, pgsql, pdo_sqlite, sqlite3, gd, bcmath, zip, intl, exif
+          tools: composer:v2
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: ${{ runner.os }}-composer-${{ hashFiles('backend-API/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Prepare Laravel environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --ansi
+          php artisan storage:link
+
+      - name: Run Pest test suite (SQLite in-memory)
+        run: php artisan test --compact
+
+      - name: Verify PostgreSQL 16 migrations, rollback, seeders, and Pest suite
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: "5432"
+          DB_DATABASE: ascending_pc_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: secret
+        run: |
+          php artisan migrate:fresh --seed --force --no-interaction
+          php artisan migrate:rollback --step=1 --force --no-interaction
+          php artisan migrate --force --no-interaction
+          php artisan test --compact
+
+  # ===========================================================================
+  # 2. Frontend CI — Node 22, SvelteKit Sync & Production Build
+  # ===========================================================================
+  frontend-ci:
+    name: Frontend Storefront (Node 22 + SvelteKit)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend-user
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-user/package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build SvelteKit production bundle
+        env:
+          PUBLIC_API_URL: http://localhost:8080/api
+          PUBLIC_STORAGE_URL: http://localhost:8080
+        run: |
+          cp .env.example .env
+          npx svelte-kit sync
+          npm run build
+          test -f build/index.js
+
+  # ===========================================================================
+  # 3. Docker Validation, Multi-Image Build & GHCR Publish
+  # ===========================================================================
+  docker-build-and-publish:
+    name: Docker Build (${{ matrix.name }})
+    needs: [backend-ci, frontend-ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./backend-API
+            file: ./backend-API/Dockerfile
+            target: runtime
+          - name: frontend
+            context: ./frontend-user
+            file: ./frontend-user/Dockerfile
+            target: runner
+          - name: gateway
+            context: ./docker/nginx
+            file: ./docker/nginx/Dockerfile
+            target: ""
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose manifests
+        if: matrix.name == 'backend'
+        env:
+          DB_PASSWORD: ci-validation-password
+          APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          APP_URL: http://localhost:8080
+          MIDTRANS_SERVER_KEY: SB-Mid-server-ci-placeholder
+          MIDTRANS_CLIENT_KEY: SB-Mid-client-ci-placeholder
+        run: |
+          docker compose -f compose.yaml config -q
+          docker compose -f compose.prod.yaml config -q
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute lowercase GHCR image name
+        id: repo
+        run: |
+          OWNER_LOWER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${OWNER_LOWER}/ascending-pc-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.repo.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          push: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PUBLIC_API_URL=${{ vars.PUBLIC_API_URL || 'http://localhost:8080/api' }}
+            PUBLIC_STORAGE_URL=${{ vars.PUBLIC_STORAGE_URL || 'http://localhost:8080' }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  # ===========================================================================
+  # 4. Optional Production SSH Deployment (enabled via vars.ENABLE_SSH_DEPLOY)
+  # ===========================================================================
+  deploy-production:
+    name: Deploy to Production Server
+    needs: [docker-build-and-publish]
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) &&
+      vars.ENABLE_SSH_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy updated GHCR stack over SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/ascending-pc' }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN || secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+          scp -i ~/.ssh/deploy_key -P "$DEPLOY_PORT" compose.prod.yaml "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/compose.prod.yaml"
+
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<EOF
+            set -euo pipefail
+            cd "${DEPLOY_PATH}"
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_ACTOR}" --password-stdin
+            docker compose -f compose.prod.yaml pull
+            docker compose -f compose.prod.yaml up -d --remove-orphans
+            docker image prune -f
+          EOF
