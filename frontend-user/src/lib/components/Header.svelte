@@ -5,9 +5,12 @@
 	// 1. Pastikan Component CartDrawer diimport
 	import CartDrawer from './CartDrawer.svelte'; 
 	import { goto } from '$app/navigation';
-	import { cart, removeFromCart, clearCart } from '$lib/stores/cart';
+	import { cart } from '$lib/stores/cart';
 	import { wishlist } from '$lib/stores/wishlist';
+	import { user, isLoggedIn, logout } from '$lib/stores/auth';
+	import { PUBLIC_API_URL } from '$env/static/public';
 	import { createEventDispatcher } from 'svelte';
+	import { fly, fade } from 'svelte/transition';
 
 	const dispatch = createEventDispatcher();
 
@@ -15,7 +18,8 @@
 	let searchTerm = '';
 	function handleSearch() {
 		if (searchTerm.trim()) {
-			goto(`/web/categories/all?search=${encodeURIComponent(searchTerm)}`);
+			mobileDrawerOpen = false;
+			goto(`/web/categories/all?search=${encodeURIComponent(searchTerm.trim())}`);
 		}
 	}
 
@@ -27,18 +31,33 @@
 	let cartOpen: boolean = false;
 	let wishlistOpen: boolean = false;
 	let showUserDropdown: boolean = false;
+	let mobileDrawerOpen: boolean = false;
 
 	// Elements for click-outside detection
 	let cartBtnEl: HTMLElement | null = null;
 	let wishlistEl: HTMLElement | null = null;
 	let wishlistBtnEl: HTMLElement | null = null;
 
+	const mobileCategories = [
+		{ label: 'Semua Kategori', slug: 'all' },
+		{ label: 'Processor', slug: 'processor' },
+		{ label: 'Motherboard', slug: 'motherboard' },
+		{ label: 'CPU Cooler', slug: 'cooler' },
+		{ label: 'VGA / GPU', slug: 'vga' },
+		{ label: 'RAM', slug: 'ram' },
+		{ label: 'Storage', slug: 'storage' },
+		{ label: 'PSU', slug: 'psu' },
+		{ label: 'Casing', slug: 'casing' },
+		{ label: 'Monitor', slug: 'monitor' }
+	];
+
 	// --- Handlers ---
 	function toggleCart(): void {
 		cartOpen = !cartOpen;
 		if (cartOpen) { 
 			wishlistOpen = false;
-			showUserDropdown = false; 
+			showUserDropdown = false;
+			mobileDrawerOpen = false;
 		}
 		dispatch('cartClick');
 	}
@@ -67,12 +86,20 @@
 		}
 	}
 
+	function navigateMobile(path: string): void {
+		mobileDrawerOpen = false;
+		goto(path);
+	}
+
+	async function handleMobileLogout(): Promise<void> {
+		mobileDrawerOpen = false;
+		await logout(PUBLIC_API_URL);
+		goto('/login');
+	}
+
 	// Click Outside Handler
 	function onWindowClick(e: Event): void {
 		const target = (e as MouseEvent).target as Node | null;
-		
-		// Note: CartDrawer sudah punya logic tutup sendiri (backdrop), 
-		// jadi kita hanya cek wishlist dan user menu di sini.
 		
 		if (wishlistOpen && target && wishlistEl && wishlistBtnEl && !wishlistEl.contains(target) && !wishlistBtnEl.contains(target)) {
 			wishlistOpen = false;
@@ -100,6 +127,7 @@
 			showUserDropdown = false;
 			cartOpen = false;
 			wishlistOpen = false;
+			mobileDrawerOpen = false;
 		}
 	}
 </script>
@@ -110,11 +138,60 @@
 	<div class="site-top">
 		<div class="brand">
 			<div class="brand-top-row">
-				<a href="/web" class="logo" aria-label="Beranda - PC Store">TechForge</a>
+				<div class="mobile-header-bar">
+					<a href="/web" class="logo" aria-label="Beranda - PC Store">TechForge</a>
+					<div class="mobile-quick-actions">
+						<button
+							type="button"
+							class="mobile-icon-btn"
+							aria-label="Keranjang"
+							on:click={toggleCart}
+						>
+							<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+								<path d="M6 6h15l-1.68 9.39A2 2 0 0 1 17.36 17H8.64a2 2 0 0 1-1.96-1.61L5 4H3"></path>
+								<circle cx="10" cy="20" r="1"></circle>
+								<circle cx="18" cy="20" r="1"></circle>
+							</svg>
+							{#if $cart.length > 0}
+								<span class="mobile-badge">{$cart.length}</span>
+							{/if}
+						</button>
+						<button
+							type="button"
+							class="mobile-menu-btn"
+							aria-label="Menu"
+							aria-expanded={mobileDrawerOpen}
+							on:click={() => (mobileDrawerOpen = !mobileDrawerOpen)}
+						>
+							<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="white" stroke-width="2">
+								<line x1="3" y1="6" x2="21" y2="6"></line>
+								<line x1="3" y1="12" x2="21" y2="12"></line>
+								<line x1="3" y1="18" x2="21" y2="18"></line>
+							</svg>
+						</button>
+					</div>
+				</div>
 				
 				<div class="brand-action-row">
 					<BrandButton variant="pc" ariaLabel="PC Ready" on:click={() => goto('/web/pc-ready')}>PC Ready</BrandButton>
 					<BrandButton variant="sell" ariaLabel="Simulasi PC" on:click={() => goto('/web/simulasi-pc')}>Simulasi PC</BrandButton>
+				</div>
+
+				<div class="mobile-search-bar" role="search">
+					<input
+						class="mobile-search-input"
+						type="search"
+						placeholder="Cari komponen PC..."
+						aria-label="Cari produk"
+						bind:value={searchTerm}
+						on:keydown={handleSearchKeydown}
+					/>
+					<button type="button" class="mobile-search-submit" aria-label="Cari" on:click={handleSearch}>
+						<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="white" stroke-width="2">
+							<circle cx="11" cy="11" r="6"></circle>
+							<path d="M21 21l-4.35-4.35"></path>
+						</svg>
+					</button>
 				</div>
 			</div>
 		</div>
@@ -153,8 +230,7 @@
 					</svg>
 					<span class="cart-count">{$cart.length}</span>
 				</button>
-				
-				</div>
+			</div>
 
 			<div class="wishlist-wrapper">
 				<button
@@ -169,7 +245,7 @@
 					<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
 						<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
 					</svg>
-					<span class="wishlist-count">0</span>
+					<span class="wishlist-count">{$wishlist.length}</span>
 				</button>
 
 				{#if wishlistOpen}
@@ -203,22 +279,71 @@
 				{/if}
 			</div>
 		</div>
-
-		<button class="mobile-menu-btn" aria-label="Menu" on:click={() => goto('/web/sidebar-mobile')}>
-			<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="white" stroke-width="2">
-				<line x1="3" y1="6" x2="21" y2="6"></line>
-				<line x1="3" y1="12" x2="21" y2="12"></line>
-				<line x1="3" y1="18" x2="21" y2="18"></line>
-			</svg>
-		</button>
 	</div>
 </header>
+
+{#if mobileDrawerOpen}
+	<div class="mobile-drawer-backdrop" role="presentation" on:click={() => (mobileDrawerOpen = false)} transition:fade={{ duration: 180 }}></div>
+	<aside class="mobile-drawer" aria-label="Menu Navigasi Mobile" transition:fly={{ x: -300, duration: 220 }}>
+		<div class="mobile-drawer-header">
+			<span class="mobile-drawer-brand">TechForge</span>
+			<button type="button" class="mobile-drawer-close" aria-label="Tutup Menu" on:click={() => (mobileDrawerOpen = false)}>✕</button>
+		</div>
+
+		<div class="mobile-drawer-user">
+			{#if $isLoggedIn}
+				<div class="mobile-user-greeting">
+					<strong>{$user?.name || 'Member'}</strong>
+					<span>{$user?.email || ''}</span>
+				</div>
+				<div class="mobile-account-links">
+					<button type="button" on:click={() => navigateMobile('/web/profile')}>👤 Profil & Pesanan</button>
+					<button type="button" on:click={() => navigateMobile('/web/cart')}>🛒 Keranjang ({$cart.length})</button>
+					<button type="button" on:click={() => navigateMobile('/web/wishlist')}>❤️ Wishlist ({$wishlist.length})</button>
+					{#if $user?.is_vendor}
+						<button type="button" on:click={() => navigateMobile('/web/dashboard')}>🏪 Dashboard Toko</button>
+					{:else}
+						<button type="button" on:click={() => navigateMobile('/registervendor')}>🏪 Buka Toko Vendor</button>
+					{/if}
+				</div>
+			{:else}
+				<div class="mobile-auth-buttons">
+					<button type="button" class="btn-m-login" on:click={() => navigateMobile('/login')}>Masuk</button>
+					<button type="button" class="btn-m-register" on:click={() => navigateMobile('/register')}>Daftar</button>
+				</div>
+			{/if}
+		</div>
+
+		<div class="mobile-drawer-section">
+			<div class="mobile-section-title">Fitur Utama</div>
+			<button type="button" class="mobile-nav-item" on:click={() => navigateMobile('/web')}>🏠 Beranda Toko</button>
+			<button type="button" class="mobile-nav-item" on:click={() => navigateMobile('/web/pc-ready')}>🖥️ PC Ready</button>
+			<button type="button" class="mobile-nav-item" on:click={() => navigateMobile('/web/simulasi-pc')}>⚙️ Simulasi Rakit PC</button>
+		</div>
+
+		<div class="mobile-drawer-section">
+			<div class="mobile-section-title">Kategori Komponen</div>
+			<div class="mobile-cat-grid">
+				{#each mobileCategories as cat}
+					<button type="button" class="mobile-cat-chip" on:click={() => navigateMobile(`/web/categories/${cat.slug}`)}>
+						{cat.label}
+					</button>
+				{/each}
+			</div>
+		</div>
+
+		{#if $isLoggedIn}
+			<button type="button" class="mobile-logout-btn" on:click={handleMobileLogout}>🚪 Keluar Akun</button>
+		{/if}
+	</aside>
+{/if}
 
 <nav class="brand-category-bar bottom desktop-only" aria-label="Kategori - full width">
 	<div class="categories" role="navigation" aria-label="Kategori produk">
 		<a class="cat-pill large" href="/web/categories/all" on:click|preventDefault={() => handleCategoryClick('/web/categories/all')}>ALL CATEGORIES</a>
 		<a class="cat-pill" href="/web/categories/processor" on:click|preventDefault={() => handleCategoryClick('/web/categories/processor')}>PROCESSOR</a>
 		<a class="cat-pill" href="/web/categories/motherboard" on:click|preventDefault={() => handleCategoryClick('/web/categories/motherboard')}>MOTHERBOARD</a>
+		<a class="cat-pill" href="/web/categories/cooler" on:click|preventDefault={() => handleCategoryClick('/web/categories/cooler')}>COOLER</a>
 		<a class="cat-pill" href="/web/categories/vga" on:click|preventDefault={() => handleCategoryClick('/web/categories/vga')}>VGA</a>
 		<a class="cat-pill" href="/web/categories/storage" on:click|preventDefault={() => handleCategoryClick('/web/categories/storage')}>STORAGE</a>
 		<a class="cat-pill" href="/web/categories/ram" on:click|preventDefault={() => handleCategoryClick('/web/categories/ram')}>RAM</a>
@@ -398,33 +523,184 @@
 	.search-btn { background: transparent; border: none; padding: 6px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 	.mobile-menu-btn { display: none; background: transparent; border: none; color: white; cursor: pointer; padding: 8px; }
 
-	@media (max-width: 768px) {
-		.site-header { padding: 12px 16px; }
-		.site-top { flex-direction: column; gap: 12px; align-items: flex-start; }
-		.brand { min-width: 100%; width: 100%; }
-		.brand-top-row { width: 100%; flex-direction: column; gap: 12px; align-items: flex-start; }
-		.logo { font-size: 1.8rem; letter-spacing: 0.05em; }
-		.brand-action-row { width: 100%; gap: 10px; flex-wrap: wrap; margin-left: 0; }
-		.desktop-only { display: none !important; }
-		.mobile-only { display: flex !important; }
-		.mobile-menu-btn { display: block; position: absolute; top: 12px; right: 16px; }
+	.mobile-header-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.mobile-quick-actions,
+	.mobile-search-bar {
+		display: none;
 	}
 
-	@media (max-width: 640px) {
-		.site-header { padding: 10px 12px; position: relative; }
-		.site-top { flex-direction: column; gap: 8px; align-items: flex-start; }
-		.brand { width: 100%; min-width: 100%; }
-		.brand-top-row { width: 100%; flex-direction: column; gap: 10px; }
-		.logo { font-size: 1.6rem; margin-bottom: 4px; }
+	.mobile-icon-btn {
+		position: relative;
+		width: 40px;
+		height: 40px;
+		border-radius: 50%;
+		border: 1px solid rgba(255, 255, 255, 0.25);
+		background: rgba(255, 255, 255, 0.14);
+		color: #fff;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+	}
+	.mobile-badge {
+		position: absolute;
+		top: -4px;
+		right: -4px;
+		background: #ef4444;
+		color: #fff;
+		font-size: 0.68rem;
+		font-weight: 800;
+		padding: 1px 5px;
+		border-radius: 999px;
+	}
+
+	@media (max-width: 768px) {
+		.site-header { padding: 12px 16px; }
+		.site-top { flex-direction: column; gap: 10px; align-items: stretch; }
+		.brand { min-width: 100%; width: 100%; }
+		.brand-top-row { width: 100%; flex-direction: column; gap: 10px; align-items: stretch; }
+		.mobile-header-bar { width: 100%; display: flex; align-items: center; justify-content: space-between; }
+		.mobile-quick-actions { display: inline-flex; align-items: center; gap: 8px; }
+		.mobile-menu-btn { display: inline-flex; align-items: center; justify-content: center; position: static; padding: 6px; }
+		.logo { font-size: 1.75rem; letter-spacing: 0.03em; }
 		.brand-action-row { width: 100%; gap: 8px; flex-wrap: wrap; margin-left: 0; }
-		.mobile-menu-btn { display: block; position: absolute; top: 10px; right: 12px; }
+		.mobile-search-bar {
+			display: flex;
+			align-items: center;
+			width: 100%;
+			background: rgba(255, 255, 255, 0.16);
+			border: 1.5px solid rgba(255, 255, 255, 0.45);
+			border-radius: 999px;
+			padding: 4px 6px 4px 14px;
+			box-sizing: border-box;
+		}
+		.mobile-search-input {
+			flex: 1;
+			background: transparent;
+			border: none;
+			color: #fff;
+			font-size: 0.95rem;
+			outline: none;
+		}
+		.mobile-search-input::placeholder { color: rgba(255, 255, 255, 0.78); }
+		.mobile-search-submit {
+			width: 34px;
+			height: 34px;
+			border-radius: 50%;
+			border: none;
+			background: rgba(15, 23, 42, 0.35);
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			cursor: pointer;
+		}
+		.desktop-only { display: none !important; }
+		.mobile-only { display: flex !important; }
 	}
 
 	@media (max-width: 480px) {
-		.site-header { padding: 8px 10px; }
-		.logo { font-size: 1.4rem; }
-		.brand-top-row { gap: 8px; }
-		.brand-action-row { gap: 6px; }
+		.site-header { padding: 10px 12px; }
+		.logo { font-size: 1.45rem; }
+	}
+
+	.mobile-drawer-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(15, 23, 42, 0.55);
+		z-index: 1200;
+	}
+	.mobile-drawer {
+		position: fixed;
+		top: 0;
+		left: 0;
+		bottom: 0;
+		width: 310px;
+		max-width: 86vw;
+		background: #0f172a;
+		color: #f8fafc;
+		z-index: 1250;
+		display: flex;
+		flex-direction: column;
+		padding: 18px 16px;
+		gap: 16px;
+		overflow-y: auto;
+		box-shadow: 8px 0 30px rgba(0, 0, 0, 0.45);
+		box-sizing: border-box;
+	}
+	.mobile-drawer-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding-bottom: 12px;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+	}
+	.mobile-drawer-brand { font-size: 1.35rem; font-weight: 900; color: #fff; }
+	.mobile-drawer-close { background: none; border: none; color: #cbd5e1; font-size: 1.3rem; cursor: pointer; }
+	.mobile-drawer-user {
+		background: rgba(255, 255, 255, 0.05);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		border-radius: 12px;
+		padding: 12px;
+	}
+	.mobile-user-greeting { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+	.mobile-user-greeting strong { font-size: 0.95rem; color: #fff; }
+	.mobile-user-greeting span { font-size: 0.8rem; color: #94a3b8; }
+	.mobile-account-links { display: flex; flex-direction: column; gap: 6px; }
+	.mobile-account-links button,
+	.mobile-nav-item {
+		width: 100%;
+		text-align: left;
+		background: rgba(255, 255, 255, 0.04);
+		border: none;
+		color: #e2e8f0;
+		padding: 10px 12px;
+		border-radius: 8px;
+		font-size: 0.92rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.mobile-account-links button:hover,
+	.mobile-nav-item:hover { background: rgba(142, 66, 225, 0.28); color: #fff; }
+	.mobile-auth-buttons { display: flex; gap: 8px; }
+	.btn-m-login, .btn-m-register {
+		flex: 1;
+		padding: 10px;
+		border-radius: 8px;
+		font-weight: 700;
+		cursor: pointer;
+		border: none;
+	}
+	.btn-m-login { background: #8E42E1; color: #fff; }
+	.btn-m-register { background: rgba(255, 255, 255, 0.12); color: #fff; }
+	.mobile-drawer-section { display: flex; flex-direction: column; gap: 8px; }
+	.mobile-section-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; font-weight: 700; }
+	.mobile-cat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+	.mobile-cat-chip {
+		background: rgba(30, 41, 59, 0.9);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		color: #e2e8f0;
+		padding: 9px 8px;
+		border-radius: 8px;
+		font-size: 0.82rem;
+		font-weight: 600;
+		cursor: pointer;
+		text-align: center;
+	}
+	.mobile-cat-chip:hover { border-color: #8E42E1; color: #fff; }
+	.mobile-logout-btn {
+		margin-top: auto;
+		width: 100%;
+		padding: 11px;
+		border-radius: 8px;
+		border: 1px solid rgba(239, 68, 68, 0.35);
+		background: rgba(239, 68, 68, 0.15);
+		color: #fca5a5;
+		font-weight: 700;
+		cursor: pointer;
 	}
 
 	.search-wrap { position: relative; }

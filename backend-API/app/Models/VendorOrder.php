@@ -21,6 +21,19 @@ class VendorOrder extends Model
         'shipping_status',
     ];
 
+    protected $casts = [
+        'order_total' => 'decimal:2',
+        'commission_fee' => 'decimal:2',
+        'net_amount' => 'decimal:2',
+    ];
+
+    protected $appends = ['total_price'];
+
+    public function getTotalPriceAttribute(): float
+    {
+        return (float) ($this->order_total ?? 0);
+    }
+
     /**
      * Get the parent order this vendor order belongs to.
      */

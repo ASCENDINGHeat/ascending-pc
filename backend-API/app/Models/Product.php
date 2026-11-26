@@ -38,30 +38,40 @@ class Product extends Model
     // Accessor for Main Image URL
     public function getImageUrlAttribute()
     {
-        // Check if details is an array and has the key path under 'images.main'
-        if (is_array($this->details) && isset($this->details['images']['main']) && $this->details['images']['main']) {
-            return asset('storage/' . $this->details['images']['main']);
+        if (is_array($this->details) && !empty($this->details['images']['main'])) {
+            $main = $this->details['images']['main'];
+            return str_starts_with($main, 'http') ? $main : asset('storage/' . $main);
         }
-        return null; // Return default placeholder URL here if needed
+        return null;
     }
 
     // Accessor for Gallery URLs
     public function getGalleryUrlsAttribute()
     {
         $urls = [];
-        if (is_array($this->details) && isset($this->details['gallery_paths'])) {
-            foreach ($this->details['gallery_paths'] as $path) {
-                $urls[] = asset('storage/' . $path);
+        $paths = $this->details['images']['gallery'] ?? $this->details['gallery_paths'] ?? [];
+        if (is_array($paths)) {
+            foreach ($paths as $path) {
+                if (!empty($path)) {
+                    $urls[] = str_starts_with($path, 'http') ? $path : asset('storage/' . $path);
+                }
             }
         }
         return $urls;
     }
 
-    public function getCategoryAttribute(){
+    public function getCategoryAttribute()
+    {
         return $this->details['category'] ?? null;
     }
-    
-    public function Vendor(){
-        return $this->belongsTo(Vendor::class);
+
+    public function vendor()
+    {
+        return $this->belongsTo(Vendor::class, 'vendor_id');
+    }
+
+    public function Vendor()
+    {
+        return $this->vendor();
     }
 }

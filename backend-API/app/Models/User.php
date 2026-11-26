@@ -75,10 +75,12 @@ class User extends Authenticatable
      *
      * @return bool
      */
-    public function getIsVendorAttribute() // <--- ADD THIS FUNCTION
+    public function getIsVendorAttribute(): bool
     {
-        // Checks if the vendor relationship returns a model or null
-        return $this->vendor !== null;
+        if ($this->relationLoaded('vendor')) {
+            return $this->getRelation('vendor') !== null;
+        }
+        return $this->vendor()->exists();
     }
 
     public function vendor()
@@ -86,16 +88,23 @@ class User extends Authenticatable
         return $this->hasOne(Vendor::class);
     }
 
-    public function parentOrders(){
+    public function parentOrders()
+    {
         return $this->hasMany(ParentOrder::class, 'user_id', 'id');
     }
 
-    public function cartItems(){
-        return $this->hasMany(CartItem::class, 'user_id', 'id');
+    public function cart()
+    {
+        return $this->hasMany(Cart::class, 'user_id', 'id');
     }
 
     public function Cart()
     {
-        return $this->hasMany(Cart::class);
+        return $this->cart();
+    }
+
+    public function wishlists()
+    {
+        return $this->hasMany(WishList::class, 'user_id', 'id');
     }
 }

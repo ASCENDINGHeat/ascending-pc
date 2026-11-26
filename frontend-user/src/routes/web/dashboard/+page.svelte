@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import { goto } from '$app/navigation';
     import { PUBLIC_API_URL } from '$env/static/public';
+    import { logout } from '$lib/stores/auth';
 
     // --- STATE MANAGEMENT ---
     let activePage = 'dashboard';
@@ -38,7 +39,7 @@
 
     // --- FORMATTERS ---
     const formatCurrency = (val: number) => 
-        new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(val);
+        new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(Number.isFinite(val) ? val : 0);
 
     // --- INITIALIZATION ---
     onMount(async () => {
@@ -60,12 +61,23 @@
                 headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
             });
 
+            if (resProfile.status === 404) {
+                alert('Anda belum terdaftar sebagai vendor. Silakan buka toko terlebih dahulu.');
+                goto('/registervendor');
+                return;
+            }
+            if (resProfile.status === 401) {
+                await logout();
+                goto('/login');
+                return;
+            }
+
             if (resProfile.ok) {
                 const data = await resProfile.json();
                 vendorProfile = data.vendor;
                 
                 // Update Balance Stat
-                dashboardStats[0].value = formatCurrency(Number(vendorProfile.balance || 0));
+                dashboardStats[0].value = formatCurrency(Number(vendorProfile?.balance || 0));
 
                 // 2. Fetch Products (Using Vendor ID)
                 if (vendorProfile && vendorProfile.id) {
@@ -89,7 +101,7 @@
 
             if (res.ok) {
                 const data = await res.json();
-                myProducts = data.data.products || [];
+                myProducts = data.data?.products || [];
 
                 // Calculate "Stok Menipis"
                 const lowStockCount = myProducts.filter((p: any) => p.stock_quantity < 5).length;
@@ -135,12 +147,10 @@
             });
 
             if (res.ok) {
-                // Update local state directly to reflect changes UI
                 myOrders = myOrders.map(o => 
                     o.id === orderId ? { ...o, shipping_status: newStatus } : o
                 );
                 alert(`Status berhasil diubah menjadi ${newStatus}`);
-                // Re-calculate stats
                 const pending = myOrders.filter((o: any) => o.shipping_status === 'pending').length;
                 const completed = myOrders.filter((o: any) => o.shipping_status === 'delivered').length;
                 dashboardStats[1].value = pending.toString();
@@ -168,13 +178,15 @@
         if (target.files && target.files.length > 0) {
             prodImageFile = target.files[0];
             const reader = new FileReader();
-            reader.onload = (e) => { prodImagePreview = e.target?.result as string; };
+            reader.onload = (ev) => { prodImagePreview = ev.target?.result as string; };
             reader.readAsDataURL(prodImageFile);
         }
     }
 
     async function handleCreateProduct() {
-        if (!prodName || !prodPrice || !prodStock) return alert("Mohon lengkapi data wajib.");
+        if (!prodName || prodPrice === null || prodStock === null) {
+            return alert("Mohon lengkapi nama produk, harga, dan stok awal.");
+        }
 
         isSubmitting = true;
         try {
@@ -182,8 +194,14 @@
             formData.append('title', prodName);
             formData.append('price', prodPrice.toString());
             formData.append('stock_quantity', prodStock.toString());
-            if (prodCategory) formData.append('category', prodCategory);
-            if (prodDesc) formData.append('description', prodDesc);
+            if (prodCategory) {
+                formData.append('category', prodCategory);
+                formData.append('details[category]', prodCategory);
+            }
+            if (prodDesc) {
+                formData.append('description', prodDesc);
+                formData.append('details[description]', prodDesc);
+            }
             if (prodImageFile) formData.append('image', prodImageFile);
 
             // --- COMPATIBILITY LOGIC ---
@@ -199,9 +217,14 @@
 
             const res = await fetch(`${PUBLIC_API_URL}/product`, {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }, // Content-Type handled automatically
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/json'
+                },
                 body: formData
             });
+
+            const payload = await res.json();
 
             if (res.ok) {
                 alert('Produk berhasil dibuat!');
@@ -209,11 +232,17 @@
                 setPage('produk');
                 if (vendorProfile?.id) fetchProducts(vendorProfile.id);
             } else {
-                const err = await res.json();
-                alert('Gagal: ' + (err.message || 'Validasi error'));
+                const validationDetails = payload.errors
+                    ? '\n' + Object.values(payload.errors).flat().join('\n')
+                    : '';
+                alert('Gagal membuat produk: ' + (payload.message || 'Validasi gagal') + validationDetails);
             }
-        } catch (e) { alert('Error koneksi'); } 
-        finally { isSubmitting = false; }
+        } catch (e) {
+            console.error("Create product error:", e);
+            alert('Gagal menghubungi server. Periksa koneksi atau ukuran file gambar (maks 2MB).');
+        } finally {
+            isSubmitting = false;
+        }
     }
 
     function resetForm() {
@@ -280,7 +309,7 @@
                     </button>
                     <button 
                         class="flex items-center justify-between p-4 bg-red-500 border-none rounded-lg text-white text-base font-medium cursor-pointer transition-colors w-full text-left hover:bg-red-600 mt-5 max-lg:mt-0 max-lg:min-w-[160px]" 
-                        on:click={() => { localStorage.removeItem('auth_token'); goto('/login'); }}
+                        on:click={async () => { await logout(PUBLIC_API_URL); goto('/login'); }}
                     >
                         <span>Keluar</span>
                         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
@@ -339,7 +368,7 @@
                                                     ">{order.shipping_status}</span>
                                                 </td>
                                                 <td class="p-4 text-sm text-slate-700">{new Date(order.created_at).toLocaleDateString('id-ID')}</td>
-                                                <td class="p-4 text-sm text-slate-900 font-bold text-right">{formatCurrency(Number(order.total_price || 0))}</td>
+                                                <td class="p-4 text-sm text-slate-900 font-bold text-right">{formatCurrency(Number(order.total_price ?? order.order_total ?? 0))}</td>
                                                 <td class="p-4 text-center">
                                                     {#if order.shipping_status === 'pending'}
                                                         <button class="px-3 py-1.5 rounded bg-blue-500 text-white text-xs font-bold hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed" disabled={processingOrderId === order.id} on:click={() => updateOrderStatus(order.id, 'processing')}>
@@ -565,7 +594,7 @@
                                             <tr class="border-b border-gray-100 last:border-none hover:bg-gray-50 transition-colors">
                                                 <td class="p-4 text-sm text-slate-800 font-mono font-medium">#{order.id}</td>
                                                 <td class="p-4 text-sm text-slate-700">{new Date(order.created_at).toLocaleDateString('id-ID')}</td>
-                                                <td class="p-4 text-sm text-slate-700 font-medium">{order.parent_order?.user?.name || 'Customer'}</td>
+                                                <td class="p-4 text-sm text-slate-700 font-medium">{order.user?.name || order.parent_order?.user?.name || 'Customer'}</td>
                                                 <td class="p-4">
                                                     <span class="px-3 py-1 rounded-full text-xs font-bold capitalize 
                                                         {order.shipping_status === 'pending' ? 'bg-yellow-400 text-white' : ''}
@@ -575,7 +604,7 @@
                                                         {order.shipping_status === 'cancelled' ? 'bg-red-400 text-white' : ''}
                                                     ">{order.shipping_status}</span>
                                                 </td>
-                                                <td class="p-4 text-sm text-slate-900 font-bold text-right">{formatCurrency(Number(order.total_price))}</td>
+                                                <td class="p-4 text-sm text-slate-900 font-bold text-right">{formatCurrency(Number(order.total_price ?? order.order_total ?? 0))}</td>
                                                 <td class="p-4 text-center">
                                                     {#if order.shipping_status === 'pending'}
                                                         <button class="px-3 py-1.5 rounded bg-blue-500 text-white text-xs font-bold hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed" disabled={processingOrderId === order.id} on:click={() => updateOrderStatus(order.id, 'processing')}>

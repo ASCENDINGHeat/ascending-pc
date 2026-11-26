@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use App\Models\Vendor;
 use App\Models\Product;
 
@@ -17,8 +18,7 @@ class VendorController extends Controller
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
-        if ($user->vendor)
-        {
+        if ($user->vendor()->exists()) {
             return response()->json([
                 'message' => 'User is already a vendor.',
                 'vendor' => $user->vendor
@@ -30,24 +30,26 @@ class VendorController extends Controller
             'store_name' => 'required|string|max:255|unique:vendors',
             'store_description' => 'nullable|string',
             'phone_number' => 'required|string|max:20',
-            'address' => 'required|string',
-            'owner_name' => 'nullable|string|max:255' // To update user name if needed
+            'address' => 'required|string|max:1000',
+            'owner_name' => 'nullable|string|max:255'
         ]);
 
-        // 1. Update User Profile with Contact Info
-        $user->update([
-            'phone_number' => $validate['phone_number'],
-            'address' => $validate['address'],
-            'name' => $validate['owner_name'] ?? $user->name,
-        ]);
+        $vendor = DB::transaction(function () use ($user, $validate) {
+            $user->update([
+                'phone_number' => $validate['phone_number'],
+                'address' => $validate['address'],
+                'name' => $validate['owner_name'] ?? $user->name,
+            ]);
 
-        // 2. Create Vendor Profile
-        $vendor = $user->vendor()->create([
-            'store_name' => $validate['store_name'],
-            'store_description' => $validate['store_description'] ?? '',
-            'commission_rate' => 5.00,
-            'balance' => 0.0
-        ]);
+            return $user->vendor()->create([
+                'store_name' => $validate['store_name'],
+                'store_description' => $validate['store_description'] ?? '',
+                'commission_rate' => 5.00,
+                'balance' => 0.0
+            ]);
+        });
+
+        $user->load('vendor');
 
         return response()->json([
             'message' => 'Vendor registration successful.',

@@ -1,8 +1,8 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { fly, slide } from 'svelte/transition';
+    import { fly } from 'svelte/transition';
     import { goto } from '$app/navigation';
-    import { cart } from '$lib/stores/cart';
+    import { browser } from '$app/environment';
     import { PUBLIC_API_URL } from '$env/static/public';
 
     // --- Types ---
@@ -15,7 +15,9 @@
         brand: string;
         name: string;
         price: number;
-        specs: string; 
+        specs: string;
+        socket?: string;
+        memory?: string;
         imagePlaceholder: string;
     }
 
@@ -28,10 +30,47 @@
         options: Product[];
     }
 
+    const KNOWN_BRANDS = [
+        'COOLER MASTER', 'BE QUIET', 'WESTERN DIGITAL', 'TEAMGROUP', 'POWERCOLOR',
+        'VIEWSONIC', 'THERMALTAKE', 'GIGABYTE', 'KINGSTON', 'SEASONIC', 'DEEPCOOL',
+        'SAPPHIRE', 'G.SKILL', 'CORSAIR', 'SAMSUNG', 'CRUCIAL', 'SEAGATE', 'LIAN LI',
+        'FRACTAL', 'ASROCK', 'NVIDIA', 'NOCTUA', 'LENOVO', 'INTEL', 'ZOTAC', 'GALAX',
+        'PALIT', 'ADATA', 'ASUS', 'NZXT', 'BENQ', 'ACER', 'AMD', 'MSI', 'AOC', 'LG', 'WD'
+    ];
+
+    const SOCKETS = ['AM5', 'AM4', 'LGA1700', 'LGA1200'];
+    const MEMORY_TYPES = ['DDR5', 'DDR4'];
+    const STORAGE_KEY = 'simulasi_pc_selection';
+
+    function detectBrand(title: string, explicitBrand?: string): string {
+        if (explicitBrand && explicitBrand.trim().length > 0) {
+            return explicitBrand.trim();
+        }
+        const upper = title.toUpperCase();
+        for (const candidate of KNOWN_BRANDS) {
+            if (upper.includes(candidate)) {
+                return candidate;
+            }
+        }
+        const firstToken = title.trim().split(/\s+/)[0]?.replace(/[^a-zA-Z0-9.\-]/g, '');
+        return firstToken && firstToken.length >= 2 ? firstToken.toUpperCase() : 'Generic';
+    }
+
+    function extractTokens(product: Product | null, candidates: string[], explicitValue?: string): string[] {
+        if (!product) return [];
+        const haystack = `${explicitValue || ''} ${product.specs || ''} ${product.name || ''}`.toUpperCase().replace(/\s+/g, '');
+        return candidates.filter(token => haystack.includes(token));
+    }
+
+    function hasOverlap(a: string[], b: string[]): boolean {
+        if (a.length === 0 || b.length === 0) return true;
+        return a.some(token => b.includes(token));
+    }
+
     // --- State Management ---
     let products: Product[] = [];
     let isLoading = true;
-    let isAddingToCart = false; // New State for API loading
+    let isAddingToCart = false;
     
     let activeCategory: CategoryKey = 'processor';
     let brandFilter: string = 'ALL'; 
@@ -42,8 +81,30 @@
         processor: null, motherboard: null, cooler: null, ram: null, storage: null, vga: null, psu: null, casing: null, monitor: null
     };
 
+    function persistSelection(map: Record<CategoryKey, Product | null>) {
+        if (!browser) return;
+        try {
+            sessionStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+        } catch {
+            // Ignore storage errors
+        }
+    }
+
     // --- API INTEGRATION ---
     onMount(async () => {
+        if (browser) {
+            try {
+                const saved = sessionStorage.getItem(STORAGE_KEY);
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    if (parsed && typeof parsed === 'object') {
+                        selectionMap = { ...selectionMap, ...parsed };
+                    }
+                }
+            } catch {
+                sessionStorage.removeItem(STORAGE_KEY);
+            }
+        }
         await fetchAllProducts();
     });
 
@@ -56,22 +117,17 @@
 
                 products = rawProducts.map((p: any) => {
                     const details = p.details || {};
-                    let brand = 'Generic';
-                    const titleUpper = p.title.toUpperCase();
-                    if (titleUpper.includes('AMD')) brand = 'AMD';
-                    else if (titleUpper.includes('INTEL')) brand = 'INTEL';
-                    else if (titleUpper.includes('NVIDIA')) brand = 'NVIDIA';
-                    else if (titleUpper.includes('ASUS')) brand = 'ASUS';
-                    else if (titleUpper.includes('MSI')) brand = 'MSI';
-                    else if (titleUpper.includes('GIGABYTE')) brand = 'GIGABYTE';
+                    const specParts = [details.specs, details.socket, details.memory].filter(Boolean);
 
                     return {
                         id: String(p.id),
                         name: p.title,
                         price: Number(p.price),
-                        category: details.category || 'unknown',
-                        specs: details.specs || '',
-                        brand: brand,
+                        category: details.category || p.category || 'unknown',
+                        specs: specParts.join(' • '),
+                        socket: details.socket || '',
+                        memory: details.memory || '',
+                        brand: detectBrand(p.title || '', details.brand),
                         imagePlaceholder: p.image_url || '/images/placeholder.png'
                     };
                 });
@@ -152,19 +208,32 @@
             }
 
             let matchCompatibility = true;
-            if (activeCategory === 'motherboard' && selectionMap.processor) {
-                const cpuSpecs = (selectionMap.processor.specs || '').toUpperCase();
-                const moboSpecs = (p.specs || '').toUpperCase();
-                if (cpuSpecs.includes('AM5') && !moboSpecs.includes('AM5')) matchCompatibility = false;
-                if (cpuSpecs.includes('LGA1700') && !moboSpecs.includes('LGA1700')) matchCompatibility = false;
-                if (cpuSpecs.includes('AM4') && !moboSpecs.includes('AM4')) matchCompatibility = false;
+            const candidateSockets = extractTokens(p, SOCKETS, p.socket);
+            const candidateMemory = extractTokens(p, MEMORY_TYPES, p.memory);
+
+            const selectedCpuSockets = extractTokens(selectionMap.processor, SOCKETS, selectionMap.processor?.socket);
+            const selectedMoboSockets = extractTokens(selectionMap.motherboard, SOCKETS, selectionMap.motherboard?.socket);
+            const selectedMoboMemory = extractTokens(selectionMap.motherboard, MEMORY_TYPES, selectionMap.motherboard?.memory);
+            const selectedRamMemory = extractTokens(selectionMap.ram, MEMORY_TYPES, selectionMap.ram?.memory);
+
+            if (activeCategory === 'processor' && selectedMoboSockets.length > 0) {
+                matchCompatibility = hasOverlap(candidateSockets, selectedMoboSockets);
+            } else if (activeCategory === 'motherboard') {
+                if (selectedCpuSockets.length > 0 && !hasOverlap(candidateSockets, selectedCpuSockets)) {
+                    matchCompatibility = false;
+                }
+                if (selectedRamMemory.length > 0 && !hasOverlap(candidateMemory, selectedRamMemory)) {
+                    matchCompatibility = false;
+                }
+            } else if (activeCategory === 'cooler') {
+                const targetSockets = selectedCpuSockets.length > 0 ? selectedCpuSockets : selectedMoboSockets;
+                if (targetSockets.length > 0 && !hasOverlap(candidateSockets, targetSockets)) {
+                    matchCompatibility = false;
+                }
+            } else if (activeCategory === 'ram' && selectedMoboMemory.length > 0) {
+                matchCompatibility = hasOverlap(candidateMemory, selectedMoboMemory);
             }
-            if (activeCategory === 'ram' && selectionMap.motherboard) {
-                const moboSpecs = (selectionMap.motherboard.specs || '').toUpperCase();
-                const ramSpecs = (p.specs || '').toUpperCase();
-                if (moboSpecs.includes('DDR5') && !ramSpecs.includes('DDR5')) matchCompatibility = false;
-                if (moboSpecs.includes('DDR4') && !ramSpecs.includes('DDR4')) matchCompatibility = false;
-            }
+
             return matchSearch && matchBrand && matchCompatibility;
         })
         .sort((a, b) => {
@@ -194,21 +263,25 @@
             selectionMap[activeCategory] = item;
         }
         selectionMap = selectionMap;
+        persistSelection(selectionMap);
     }
 
     function removeSpecificItem(key: CategoryKey) {
         selectionMap[key] = null;
         selectionMap = selectionMap;
+        persistSelection(selectionMap);
     }
 
     function resetSelection() {
         if(confirm("Reset semua pilihan?")) {
             selectionMap = { processor: null, motherboard: null, cooler: null, ram: null, storage: null, vga: null, psu: null, casing: null, monitor: null };
+            persistSelection(selectionMap);
             showSummary = false;
         }
     }
 
     function openProduct(item: Product) {
+        persistSelection(selectionMap);
         goto(`/web/product/${item.id}`);
     }
 

@@ -1,41 +1,39 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { goto } from '$app/navigation';
+    import { PUBLIC_API_URL } from '$env/static/public';
+    import { isLoggedIn, user, logout } from '$lib/stores/auth';
 
-    // --- KODE BARU (SATPAM) ---
     onMount(() => {
-        const isLoggedIn = localStorage.getItem("userLoggedIn");
-        if (!isLoggedIn) {
+        const hasAuth = $isLoggedIn || Boolean(localStorage.getItem('auth_token'));
+        if (!hasAuth) {
             goto('/login');
         }
     });
-    // --- AKHIR KODE SATPAM ---
 
-    const portalLinks = [
+    $: portalLinks = [
         {
             id: "web",
-            label: "Link Web Utama",
+            label: "Toko Utama",
             url: "/web",
             icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>`,
         },
         {
             id: "user",
-            label: "Area Pengguna",
-            url: "/pengguna",
+            label: "Profil & Pesanan Saya",
+            url: "/web/profile",
             icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`,
         },
         {
             id: "vendor",
-            label: "Login Vendor",
-            url: "/vendor",
+            label: $user?.is_vendor ? "Dashboard Toko" : "Buka Toko Vendor",
+            url: $user?.is_vendor ? "/web/dashboard" : "/registervendor",
             icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>`,
         },
     ];
 
-    // Tambahkan/ubah fungsi logout jika ada tombol Logout
-    function handleLogout() {
-        localStorage.removeItem("userLoggedIn"); // Hapus status login
-        localStorage.removeItem("userName");
+    async function handleLogout() {
+        await logout(PUBLIC_API_URL);
         goto('/login');
     }
 </script>
@@ -70,15 +68,8 @@
 </div>
 
 <style>
-    /* Reset agar body tidak ada margin bawaan */
-    :global(body) {
-        margin: 0;
-        padding: 0;
-        overflow: hidden; /* Mencegah scrollbar muncul sama sekali */
-    }
-
     .portal-container {
-        height: 100vh; /* Tinggi pas 1 layar */
+        min-height: 100vh;
         width: 100%;
         display: flex;
         flex-direction: column;

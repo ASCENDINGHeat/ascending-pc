@@ -2,42 +2,23 @@
     import { goto } from '$app/navigation';
     import { createEventDispatcher, onMount } from 'svelte';
     import { PUBLIC_API_URL } from '$env/static/public';
-    import { user, clearUser } from '$lib/stores/user'; // Ambil data dari store
+    import { user, isLoggedIn as storeLoggedIn, normalizeUser, logout } from '$lib/stores/auth';
 
     const dispatch = createEventDispatcher();
 
-    // 1. DATA DARI PARENT (Server Side)
-    // Jangan diubah/di-assign secara manual di dalam file ini!
     export let userData: { name: string; email: string; is_vendor?: boolean } | null = null;
-
-    // 2. DATA DARI API (Client Side - Fetch sendiri)
-    // Kita simpan hasil fetch di sini, bukan menimpa 'userData'
-    let apiUser: { name: string; email: string; role?: string } | null = null;
 
     let isOpen = false;
 
-    // 3. LOGIKA PENGGABUNGAN ($:)
-    // "Gunakan data API jika ada. Jika tidak, gunakan data dari Parent."
-    // Dengan cara ini, meskipun Parent mengirim null, apiUser tetap menjaga status login.
-    $: currentUser = apiUser || userData;
+    $: currentUser = $user || userData;
+    $: isLoggedIn = Boolean(currentUser || $storeLoggedIn);
+    $: isVendor = Boolean(currentUser?.is_vendor);
 
-    // 4. STATUS LOGIN OTOMATIS
-    // Seluruh status login sekarang memantau 'currentUser'
-    $: isLoggedIn = !!currentUser;
-    $: isVendor = !!currentUser?.is_vendor;
-
-    // --- ON MOUNT ---
     onMount(async () => {
         const token = localStorage.getItem('auth_token');
-        
-        // Jika Parent sudah memberi data, kita aman.
-        if (userData) return;
-
-        // Jika tidak ada token, stop.
-        if (!token) return;
+        if (!token || $user) return;
 
         try {
-            // console.log("UserMenu: Mengambil data user...");
             const res = await fetch(`${PUBLIC_API_URL}/user`, {
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -47,68 +28,29 @@
 
             if (res.ok) {
                 const data = await res.json();
-                if (data && data.email) {
-                    // [PENTING] Simpan ke 'apiUser', JANGAN timpa 'userData'
-                    apiUser = data; 
-                    console.log("UserMenu: Login via Token sukses!");
+                const normalized = normalizeUser(data);
+                if (normalized) {
+                    user.set(normalized);
                 }
-            } else {
-                // Hanya logout jika token benar-benar ditolak (401/403)
-                if (res.status === 401 || res.status === 403) {
-                    handleLogoutLocal();
-                }
+            } else if (res.status === 401 || res.status === 403) {
+                await logout();
             }
         } catch (err) {
-            console.error("UserMenu: Network Error (Abaikan jika offline sebentar)", err);
+            console.error("UserMenu: Network Error", err);
         }
     });
 
-    // --- HANDLERS ---
-    
     function handleMenuItemClick(path: string) {
         goto(path);
         dispatch('close');
         isOpen = false;
     }
 
-    // Bersihkan semua data lokal
-    function handleLogoutLocal() {
-        localStorage.removeItem('auth_token');
-        localStorage.removeItem('user_data'); 
-        
-        // Reset variabel lokal
-        apiUser = null; 
-        // Kita tidak bisa mereset 'userData' karena itu milik Parent, 
-        // tapi 'currentUser' akan otomatis null karena apiUser sudah null.
-        
-        isOpen = false;
-    }
-
     async function handleLogout() {
-        const token = localStorage.getItem('auth_token');
-        try {
-            if (token) {
-                await fetch(`${PUBLIC_API_URL}/logout`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Accept': 'application/json'
-                    }
-                });
-            }
-        } catch (error) {
-            console.error("Gagal logout server:", error);
-        } finally {
-            handleLogoutLocal();
-            // Paksa reload halaman agar Parent Component juga refresh statusnya
-            window.location.href = '/login'; 
-        }
-    }
-
-    function handleClickOutside(event: MouseEvent) {
-        if (isOpen && !(event.target as Element).closest('.user-menu-wrapper')) {
-            isOpen = false;
-        }
+        await logout(PUBLIC_API_URL);
+        dispatch('close');
+        isOpen = false;
+        goto('/login');
     }
 </script>
 

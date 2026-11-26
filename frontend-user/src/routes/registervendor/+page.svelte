@@ -2,6 +2,7 @@
     import { goto } from '$app/navigation';
     import { onMount, onDestroy } from 'svelte';
     import { PUBLIC_API_URL } from '$env/static/public';
+    import { user, normalizeUser } from '$lib/stores/auth';
 
     // State
     let businessName = "";
@@ -11,8 +12,7 @@
     let isLoading = false;
     let token = "";
 
-    onMount(async () => {
-        // 1. Check Auth
+    onMount(() => {
         token = localStorage.getItem('auth_token') || "";
         if (!token) {
             alert("Anda harus login terlebih dahulu untuk mendaftar sebagai vendor.");
@@ -20,18 +20,14 @@
             return;
         }
 
-        // 2. Prevent Scroll
         const prevOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
 
-        // 3. Pre-fill User Name (Optional)
-        try {
-            const userData = localStorage.getItem('user_data');
-            if (userData) {
-                const user = JSON.parse(userData);
-                ownerName = user.name || "";
-            }
-        } catch (e) {}
+        if ($user) {
+            ownerName = $user.name || "";
+            phone = $user.phone_number || $user.phone || "";
+            address = $user.address || "";
+        }
 
         return () => { document.body.style.overflow = prevOverflow || ''; };
     });
@@ -57,20 +53,28 @@
                     owner_name: ownerName,
                     phone_number: phone,
                     address: address,
-                    store_description: `Alamat: ${address}` // Optional default desc
+                    store_description: `Alamat: ${address}`
                 })
             });
 
             const data = await response.json();
 
             if (response.ok) {
-                alert("Selamat! Toko Anda berhasil dibuat.");
-                // Update local storage user data if needed
-                if (data.user) {
-                    localStorage.setItem('user_data', JSON.stringify(data.user));
+                const updatedUser = normalizeUser({
+                    ...($user || {}),
+                    ...(data.user || {}),
+                    is_vendor: true
+                });
+                if (updatedUser) {
+                    user.set(updatedUser);
                 }
-                goto('/web/dashboard'); // Redirect to Vendor Dashboard
+                alert("Selamat! Toko Anda berhasil dibuat.");
+                goto('/web/dashboard');
             } else {
+                if (data.errors) {
+                    const msg = Object.values(data.errors).flat().join('\n');
+                    throw new Error(msg);
+                }
                 throw new Error(data.message || 'Gagal mendaftar vendor.');
             }
 

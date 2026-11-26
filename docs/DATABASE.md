@@ -234,16 +234,21 @@ erDiagram
 ---
 
 ### 3.6 `parent_orders`
-- **Migration**: `2025_11_25_042600_create_parent_orders_table.php`
+- **Migrations**: `2025_11_25_042600_create_parent_orders_table.php` + `2025_12_16_000001_align_schema_constraints_and_order_metadata.php`
 - **Model**: `App\Models\ParentOrder` (`app/Models/ParentOrder.php`)
 
 | Column | SQL Type | Nullable | Default | Constraints / Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| `id` | `BIGINT UNSIGNED` | No | Auto | Primary Key (also passed as Midtrans `order_id`) |
+| `id` | `BIGINT UNSIGNED` | No | Auto | Primary Key |
 | `user_id` | `BIGINT UNSIGNED` | No | - | FK -> `users(id)` (restrict on delete) |
-| `total_amount` | `DECIMAL(20,2)` | No | - | Sum of item subtotals (excludes Rp 4.000 fee added for Midtrans) |
+| `midtrans_order_id` | `VARCHAR(100)` | Yes | `NULL` | `UNIQUE` collision-free Midtrans `order_id` (`ASC-{id}-{timestamp}`) |
+| `total_amount` | `DECIMAL(20,2)` | No | - | Grand total billed (`subtotal + admin_fee`) |
+| `admin_fee` | `DECIMAL(20,2)` | No | `0.00` | Platform service fee snapshot (`4000.00`) |
 | `payment_status` | `ENUM('1','2','3','4')` | No | `'1'` | `'1'` Pending, `'2'` Completed, `'3'` Failed, `'4'` Refunded |
 | `snap_token` | `VARCHAR(255)` | Yes | `NULL` | Midtrans Snap payment token |
+| `shipping_address` | `TEXT` | Yes | `NULL` | Buyer shipping address snapshot at checkout |
+| `recipient_phone` | `VARCHAR(30)` | Yes | `NULL` | Buyer phone number snapshot at checkout |
+| `snap_redirect_url` | `VARCHAR(500)` | Yes | `NULL` | Environment-aware Midtrans Snap redirect URL |
 | `created_at` / `updated_at` | `TIMESTAMP` | Yes | `NULL` | Eloquent timestamps |
 
 ---
@@ -258,7 +263,7 @@ erDiagram
 | `parent_order_id` | `BIGINT UNSIGNED` | No | - | FK -> `parent_orders(id)` |
 | `vendor_id` | `BIGINT UNSIGNED` | No | - | FK -> `vendors(id)` |
 | `order_total` | `DECIMAL(20,2)` | No | - | Gross vendor subtotal |
-| `commission_fee` | `DECIMAL(20,2)` | No | - | Platform fee deducted |
+| `commission_fee` | `DECIMAL(20,2)` | No | - | Platform fee deducted (`vendors.commission_rate`) |
 | `net_amount` | `DECIMAL(20,2)` | No | - | Vendor net receivable (`order_total - commission_fee`) |
 | `shipping_status` | `VARCHAR(50)` | No | `'processing'` | Set to `'pending'` on checkout; transitions through `'processing'`, `'shipped'`, `'delivered'`, `'cancelled'` |
 | `created_at` / `updated_at` | `TIMESTAMP` | Yes | `NULL` | Eloquent timestamps |
@@ -282,7 +287,7 @@ erDiagram
 
 ### 3.9 `payouts`
 - **Migration**: `2025_11_25_042939_create_payouts_table.php`
-- **Model**: `App\Models\payout` (`app/Models/payout.php` — unimplemented stub)
+- **Model**: `App\Models\Payout` (`app/Models/Payout.php`)
 
 | Column | SQL Type | Nullable | Default | Constraints / Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -299,37 +304,28 @@ erDiagram
 
 | Model | Defined Relationships | Appended / Custom Accessors |
 | :--- | :--- | :--- |
-| `User` | `vendor()` (`hasOne`), `parentOrders()` (`hasMany`), `Cart()` (`hasMany`), `cartItems()` (**broken**: references missing `CartItem`) | `$appends = ['is_vendor']`; `profile_picture_url` (not appended) |
-| `Vendor` | `user()` (`belongsTo`), `products()` (`hasMany`) | `logo_url` (not appended) |
-| `Product` | `Vendor()` (`belongsTo` — note PascalCase method name) | `$appends = ['image_url', 'category']`; `gallery_urls` (**broken**: reads `details.gallery_paths` instead of `details.images.gallery`) |
+| `User` | `vendor()` (`hasOne`), `parentOrders()` (`hasMany`), `cart()` / `Cart()` (`hasMany`), `wishlists()` (`hasMany`) | `$appends = ['is_vendor']`; `profile_picture_url` |
+| `Vendor` | `user()` (`belongsTo`), `products()` (`hasMany`), `vendorOrders()` (`hasMany`), `payouts()` (`hasMany`) | `store_logo_url` |
+| `Product` | `vendor()` / `Vendor()` (`belongsTo`) | `$appends = ['image_url', 'category']`; `gallery_urls` |
 | `Cart` | `user()` (`belongsTo`), `product()` (`belongsTo`) | None |
 | `WishList` | `product()` (`belongsTo`) | None |
-| `ParentOrder` | `user()` (`belongsTo`), `vendorOrders()` (`hasMany`) | None |
-| `VendorOrder` | `parentOrder()` (`belongsTo`), `vendor()` (`belongsTo`), `orderItems()` (`hasMany`) | None |
+| `ParentOrder` | `user()` (`belongsTo`), `vendorOrders()` (`hasMany`) | `$appends = ['redirect_url']` |
+| `VendorOrder` | `parentOrder()` (`belongsTo`), `vendor()` (`belongsTo`), `orderItems()` (`hasMany`) | `$appends = ['total_price']` |
 | `OrderItem` | `vendorOrder()` (`belongsTo`), `product()` (`belongsTo`) | None |
-| `payout` | None (empty class) | None |
+| `Payout` | `vendor()` (`belongsTo`) | None |
 
 ---
 
 ## 5. Seeders Overview (`database/seeders/`)
 
-- `DatabaseSeeder.php`: Creates 5 factory users + 1 test user (`test@example.com`), then invokes `vendorSeeder`, `productsSeeder`, and `cartSeeder`.
-- `vendorSeeder.php`: Creates 1 vendor row per user (`commission_rate: 5.00`).
-- `productsSeeder.php`: Attempts to seed 20 products (**currently crashes** on line 21 because `$faker->productName` is not a built-in Faker formatter without a third-party provider).
-- `cartSeeder.php`: Inserts 20 random cart items across users and products.
+- `DatabaseSeeder.php`: Ensures `test@example.com` + 3 factory users exist, then invokes `VendorSeeder`, `ProductSeeder`, and `CartSeeder`.
+- `VendorSeeder.php`: Creates active vendor storefronts (`commission_rate: 5.00`), guaranteeing at least one vendor exists.
+- `ProductSeeder.php`: Seeds 12 realistic PC component and *PC Ready* fixtures across all catalog categories with `socket`, `memory`, `brand`, and `specs` metadata.
+- `CartSeeder.php`: Idempotently seeds sample cart entries per user (`updateOrInsert` on `(user_id, product_id)`).
 
 ---
 
-## 6. Known Migration & Schema Discrepancies
+## 6. Schema & Migration Notes
 
-1. **Broken Rollback (`down()`) Table Names**:
-   - `2025_11_25_040910_create_vendor_table.php` creates `'vendors'` in `up()`, but drops `'vendor'` in `down()`.
-   - `2025_11_25_042623_create_vendors_orders_table.php` creates `'vendor_orders'` in `up()`, but drops `'vendors_orders'` in `down()`.
-2. **Column Length Mismatches**:
-   - `users.address` is `VARCHAR(255)` while `AuthController@update` validates `max:1000` (and `register` has no `max`).
-   - `vendors.store_name` is `VARCHAR(100)` while `VendorController@register` validates `max:255`.
-3. **Missing Uniqueness Constraints**:
-   - `vendors.user_id` lacks a `UNIQUE` database index despite a `1:1` domain invariant.
-   - `cart` lacks `UNIQUE(user_id, product_id)`, allowing duplicate cart rows under concurrent requests.
-4. **Missing Historical Order Snapshots**:
-   - `parent_orders` does not snapshot the shipping address or Rp 4.000 admin fee; `order_items` snapshots `unit_price` but not `product_title`.
+- Migration `2025_12_16_000001_align_schema_constraints_and_order_metadata.php` widens `users.address` to `TEXT` and `vendors.store_name` to `VARCHAR(255)`, enforces `UNIQUE(user_id)` on `vendors` and `UNIQUE(user_id, product_id)` on `cart`, and adds `midtrans_order_id`, `admin_fee`, `shipping_address`, `recipient_phone`, and `snap_redirect_url` to `parent_orders`.
+- `order_items` snapshots `unit_price` at checkout; `ProductController@destroy` prevents hard-deleting products that have historical `order_items` (`409 Conflict`).

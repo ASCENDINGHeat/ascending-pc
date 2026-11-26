@@ -19,12 +19,16 @@ use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
+    private const ADMIN_FEE = 4000;
+
     public function checkout(Request $request)
     {
         $user = $request->user();
-        $request->validate([
+        $validated = $request->validate([
             'selected_cart_ids' => 'required|array|min:1',
             'selected_cart_ids.*' => 'integer|exists:cart,id',
+            'shipping_address' => 'nullable|string|max:1000',
+            'recipient_phone' => 'nullable|string|max:30',
         ]);
 
         if (empty(config('midtrans.server_key'))) {
@@ -34,15 +38,38 @@ class OrderController extends Controller
             ], 500);
         }
 
+        $shippingAddress = trim((string) ($validated['shipping_address'] ?? $user->address ?? ''));
+        $recipientPhone = trim((string) ($validated['recipient_phone'] ?? $user->phone_number ?? ''));
+
+        if ($shippingAddress === '') {
+            return response()->json([
+                'message' => 'Alamat pengiriman wajib diisi sebelum melakukan checkout.',
+                'errors' => ['shipping_address' => ['Alamat pengiriman wajib diisi.']]
+            ], 422);
+        }
+
         $parentOrder = null;
-        $calculatedTotal = 0;
+        $grandTotal = 0;
+        $midtransOrderId = null;
 
         try {
             // Phase 1: Atomic DB order creation & inventory reservation (no external HTTP inside lock)
             DB::beginTransaction();
 
+            // Persist shipping details back to user profile if not yet configured
+            $profileUpdates = [];
+            if (empty($user->address) && $shippingAddress !== '') {
+                $profileUpdates['address'] = $shippingAddress;
+            }
+            if (empty($user->phone_number) && $recipientPhone !== '') {
+                $profileUpdates['phone_number'] = $recipientPhone;
+            }
+            if (!empty($profileUpdates)) {
+                $user->update($profileUpdates);
+            }
+
             $cartItems = Cart::with('product.vendor')
-                ->whereIn('id', $request->selected_cart_ids)
+                ->whereIn('id', $validated['selected_cart_ids'])
                 ->where('user_id', $user->id)
                 ->get();
 
@@ -54,7 +81,8 @@ class OrderController extends Controller
 
             // Lock all involved products in deterministic ID order to prevent deadlocks & overselling
             $productIds = $cartItems->pluck('product_id')->unique()->sort()->values();
-            $lockedProducts = Product::whereIn('id', $productIds)
+            $lockedProducts = Product::with('vendor')
+                ->whereIn('id', $productIds)
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get()
@@ -76,29 +104,41 @@ class OrderController extends Controller
                 }
             }
 
+            $itemsSubtotal = 0;
             foreach ($cartItems as $item) {
                 $lockedProduct = $lockedProducts->get($item->product_id);
-                $calculatedTotal += $item->quantity * $lockedProduct->price;
+                $itemsSubtotal += $item->quantity * $lockedProduct->price;
             }
 
+            $grandTotal = round($itemsSubtotal + self::ADMIN_FEE, 2);
             $vendorGroups = $cartItems->groupBy(fn ($item) => $lockedProducts->get($item->product_id)->vendor_id);
 
             $parentOrder = ParentOrder::create([
                 'user_id' => $user->id,
-                'total_amount' => $calculatedTotal,
+                'total_amount' => $grandTotal,
+                'admin_fee' => self::ADMIN_FEE,
                 'payment_status' => '1',
                 'snap_token' => null,
+                'shipping_address' => $shippingAddress,
+                'recipient_phone' => $recipientPhone !== '' ? $recipientPhone : null,
             ]);
+
+            $midtransOrderId = 'ASC-' . $parentOrder->id . '-' . now()->format('YmdHis');
+            $parentOrder->update(['midtrans_order_id' => $midtransOrderId]);
 
             foreach ($vendorGroups as $vendorId => $items) {
                 $vendorOrderTotal = 0;
+                $vendorModel = null;
 
                 foreach ($items as $item) {
                     $lockedProduct = $lockedProducts->get($item->product_id);
                     $vendorOrderTotal += $item->quantity * $lockedProduct->price;
+                    $vendorModel = $vendorModel ?? $lockedProduct->vendor;
                 }
 
-                $commissionRate = 0.10;
+                // Apply vendor's configured commission_rate (default 5.00%) instead of hardcoded 10%
+                $commissionPercent = (float) ($vendorModel?->commission_rate ?? 5.00);
+                $commissionRate = max(0, min($commissionPercent, 100)) / 100;
                 $commissionFee = round($vendorOrderTotal * $commissionRate, 2);
                 $netAmount = round($vendorOrderTotal - $commissionFee, 2);
 
@@ -140,37 +180,46 @@ class OrderController extends Controller
 
         // Phase 2: Request Midtrans Snap Token outside DB row locks
         try {
+            $customerDetails = [
+                'first_name' => $user->name,
+                'email' => $user->email,
+            ];
+            if ($recipientPhone !== '') {
+                $customerDetails['phone'] = $recipientPhone;
+            }
+
             $params = [
                 'transaction_details' => [
-                    'order_id' => $parentOrder->id,
-                    'gross_amount' => (int) round((float) $calculatedTotal) + 4000,
+                    'order_id' => $midtransOrderId,
+                    'gross_amount' => (int) round((float) $grandTotal),
                 ],
-                'customer_details' => [
-                    'first_name' => $user->name,
-                    'email' => $user->email,
-                ],
+                'customer_details' => $customerDetails,
             ];
 
             $snapToken = Snap::getSnapToken($params);
-
-            DB::transaction(function () use ($parentOrder, $snapToken, $request, $user) {
-                $parentOrder->update(['snap_token' => $snapToken]);
-
-                Cart::whereIn('id', $request->selected_cart_ids)
-                    ->where('user_id', $user->id)
-                    ->delete();
-            });
-
             $snapBaseUrl = config('midtrans.is_production')
                 ? 'https://app.midtrans.com/snap/v2/vtweb/'
                 : 'https://app.sandbox.midtrans.com/snap/v2/vtweb/';
+            $redirectUrl = $snapBaseUrl . $snapToken;
+
+            DB::transaction(function () use ($parentOrder, $snapToken, $redirectUrl, $validated, $user) {
+                $parentOrder->update([
+                    'snap_token' => $snapToken,
+                    'snap_redirect_url' => $redirectUrl,
+                ]);
+
+                Cart::whereIn('id', $validated['selected_cart_ids'])
+                    ->where('user_id', $user->id)
+                    ->delete();
+            });
 
             return response()->json([
                 'status' => 'success',
                 'message' => 'Order created, waiting for payment',
                 'snap_token' => $snapToken,
                 'order_id' => $parentOrder->id,
-                'redirect_url' => $snapBaseUrl . $snapToken,
+                'midtrans_order_id' => $midtransOrderId,
+                'redirect_url' => $redirectUrl,
             ], 201);
         } catch (\Throwable $e) {
             // Compensate: restore reserved inventory and remove unpayable order while keeping user's cart intact
@@ -204,8 +253,6 @@ class OrderController extends Controller
 
     public function index(Request $request)
     {
-        // Retrieve the authenticated user's parent orders, ordered by newest first.
-        // Eager load vendorOrders for a complete overview.
         $orders = $request->user()->parentOrders()->with('vendorOrders')->latest()->paginate(15);
 
         return response()->json($orders);
@@ -218,12 +265,10 @@ class OrderController extends Controller
             return response()->json(['message' => 'Order not found.'], 404);
         }
 
-        // Policy/Authorization Check: Ensure the order belongs to the authenticated user
         if ($parentOrder->user_id !== auth()->id()) {
             return response()->json(['message' => 'Unauthorized.'], 403);
         }
 
-        // Load all relationships: vendor orders, and the items within each vendor order.
         $parentOrder->load('vendorOrders.orderItems.product');
 
         return response()->json($parentOrder);
@@ -257,13 +302,22 @@ class OrderController extends Controller
         $fraudStatus = (string) $request->input('fraud_status', '');
 
         return DB::transaction(function () use ($orderId, $grossAmount, $transactionStatus, $fraudStatus) {
-            $order = ParentOrder::where('id', $orderId)->lockForUpdate()->first();
+            $order = ParentOrder::where('midtrans_order_id', $orderId)
+                ->when(ctype_digit($orderId), fn ($q) => $q->orWhere('id', (int) $orderId))
+                ->lockForUpdate()
+                ->first();
+
             if (!$order) {
                 return response()->json(['message' => 'Order not found'], 404);
             }
 
-            $expectedGross = (int) round((float) $order->total_amount) + 4000;
+            // Orders created after P1 store admin_fee inside total_amount; legacy orders had admin_fee == 0
+            $recordedAdminFee = (float) ($order->admin_fee ?? 0);
+            $expectedGross = $recordedAdminFee > 0
+                ? (int) round((float) $order->total_amount)
+                : (int) round((float) $order->total_amount) + self::ADMIN_FEE;
             $actualGross = (int) round((float) $grossAmount);
+
             if ($actualGross !== $expectedGross) {
                 Log::warning('Midtrans callback rejected: gross_amount mismatch', [
                     'order_id' => $orderId,
@@ -273,8 +327,7 @@ class OrderController extends Controller
                 return response()->json(['message' => 'Gross amount mismatch'], 400);
             }
 
-            // Terminal states ('2' Completed, '3' Failed/Cancelled, '4' Refunded) are idempotent:
-            // ignore duplicate or out-of-order notifications to prevent stock inflation & status regression.
+            // Terminal states ('2' Completed, '3' Failed/Cancelled, '4' Refunded) are idempotent
             if (in_array((string) $order->payment_status, ['2', '3', '4'], true)) {
                 return response()->json(['message' => 'Callback already processed']);
             }

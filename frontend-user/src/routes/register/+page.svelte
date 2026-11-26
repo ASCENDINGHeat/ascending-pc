@@ -2,7 +2,7 @@
     import { goto } from '$app/navigation';
     import { onMount, onDestroy } from 'svelte';
     import { PUBLIC_API_URL } from '$env/static/public';
-    import { user, isLoggedIn } from '$lib/stores/auth';
+    import { setAuth } from '$lib/stores/auth';
 
     let name = "";
     let email = "";
@@ -51,10 +51,7 @@
                 }
                 throw new Error(data.message || 'Gagal mendaftar');
             } else {
-                localStorage.setItem('auth_token', data.access_token);
-                localStorage.setItem('user_data', JSON.stringify(data.user));
-                user.set(data.user);
-                isLoggedIn.set(true);
+                setAuth(data.access_token, data.user);
                 alert("Registrasi berhasil!");
                 goto('/web');
             }

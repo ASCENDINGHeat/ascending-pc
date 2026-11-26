@@ -3,6 +3,7 @@
     import { onMount } from 'svelte';
     import { fly, fade } from 'svelte/transition';
     import heroImage from './assets gambar/halaman utama.jpg';
+    import { isLoggedIn, user } from '$lib/stores/auth';
 
     let ready = false;
     onMount(() => ready = true);
@@ -20,7 +21,7 @@
             id: "user",
             label: "Area Pengguna", 
             sub: "Cek Pesanan & Profil",
-            url: "/pengguna",
+            url: "/web/profile",
             primary: false,
             icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`
         }
@@ -28,8 +29,8 @@
 
     function handlePenggunaClick(event: MouseEvent) {
         event.preventDefault();
-        const isLoggedIn = localStorage.getItem("userLoggedIn");
-        if (isLoggedIn) goto('/pengguna');
+        const hasAuth = $isLoggedIn || Boolean(localStorage.getItem('auth_token'));
+        if (hasAuth) goto('/web/profile');
         else goto('/login');
     }
 </script>
@@ -44,8 +45,13 @@
             <span>PC Store</span>
         </div>
         <div class="nav-links">
-            <a href="/login">Login</a>
-            <a href="/register" class="btn-small">Daftar</a>
+            {#if $isLoggedIn}
+                <a href="/web/profile">{$user?.name || 'Profil Saya'}</a>
+                <a href="/web" class="btn-small">Belanja</a>
+            {:else}
+                <a href="/login">Login</a>
+                <a href="/register" class="btn-small">Daftar</a>
+            {/if}
         </div>
     </header>
 

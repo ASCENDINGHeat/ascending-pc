@@ -1,27 +1,27 @@
 <script lang="ts">
-    import { slide, fly, fade } from 'svelte/transition'; // Tambah fly/fade untuk animasi overlay
+    import { fly } from 'svelte/transition';
     import { goto } from '$app/navigation';
+    import { isLoggedIn, user, logout } from '$lib/stores/auth';
+    import { cart } from '$lib/stores/cart';
+    import { PUBLIC_API_URL } from '$env/static/public';
 
-    // Logika PC Ready dihapus sesuai permintaan
-    
-    let isCatalogOpen = false; // State untuk mengontrol tampilan full screen
+    let isCatalogOpen = false;
+    let searchQuery = '';
 
     const catalogItems = [
-        { label: 'Processor', slug: 'processor', icon: 'cpu' },
-        { label: 'Motherboard', slug: 'motherboard', icon: 'grid' },
-        { label: 'Memory (RAM)', slug: 'ram', icon: 'memory' },
-        { label: 'Storage (SSD/HDD)', slug: 'storage', icon: 'hard-drive' },
-        { label: 'Graphics Card', slug: 'vga', icon: 'monitor' },
-        { label: 'Power Supply', slug: 'psu', icon: 'zap' },
-        { label: 'Casing', slug: 'casing', icon: 'box' },
-        { label: 'Fan & Cooling', slug: 'fan', icon: 'wind' },
-        { label: 'CPU Cooler', slug: 'cooler', icon: 'thermometer' },
-        { label: 'Keyboard & Mouse', slug: 'peripherals', icon: 'mouse' },
-        { label: 'Monitor', slug: 'monitor', icon: 'tv' }
+        { label: 'Semua Kategori', slug: 'all' },
+        { label: 'Processor', slug: 'processor' },
+        { label: 'Motherboard', slug: 'motherboard' },
+        { label: 'CPU Cooler', slug: 'cooler' },
+        { label: 'Memory (RAM)', slug: 'ram' },
+        { label: 'Storage (SSD/HDD)', slug: 'storage' },
+        { label: 'Graphics Card (VGA)', slug: 'vga' },
+        { label: 'Power Supply (PSU)', slug: 'psu' },
+        { label: 'Casing', slug: 'casing' },
+        { label: 'Monitor', slug: 'monitor' }
     ];
 
     function closeSidebar() {
-        // Logika tutup sidebar standar
         history.length > 1 ? history.back() : goto('/web');
     }
 
@@ -31,37 +31,85 @@
 
     function openCategory(slug: string) {
         goto(`/web/categories/${slug}`);
-        isCatalogOpen = false; // Tutup overlay setelah memilih
+        isCatalogOpen = false;
+    }
+
+    function submitSearch() {
+        if (searchQuery.trim()) {
+            goto(`/web/categories/all?search=${encodeURIComponent(searchQuery.trim())}`);
+        }
+    }
+
+    async function handleLogout() {
+        await logout(PUBLIC_API_URL);
+        goto('/login');
     }
 </script>
 
 <div class="backdrop" on:click={closeSidebar} role="presentation" />
 
-<aside class="sidebar" in:slide={{ x: -300, duration: 220 }}>
+<aside class="sidebar" in:fly={{ x: -300, duration: 220 }}>
     <header class="sb-header">
-        <div class="sb-title">Menu</div>
+        <div class="sb-title">TechForge</div>
         <button class="sb-close" aria-label="Tutup" on:click={closeSidebar}>✕</button>
     </header>
 
-    <nav class="sb-nav">
-        <a class="sb-link" href="/web/pc-ready" on:click|preventDefault={() => goto('/web/pc-ready')}>
-            PC Ready
-        </a>
+    <form class="sb-search" on:submit|preventDefault={submitSearch}>
+        <input type="search" bind:value={searchQuery} placeholder="Cari produk..." aria-label="Cari produk" />
+        <button type="submit">Cari</button>
+    </form>
 
+    <nav class="sb-nav">
         <button class="sb-link special" on:click={toggleCatalog}>
             Katalog Komponen
             <span class="arrow">➔</span>
         </button>
 
+        <a class="sb-link" href="/web/pc-ready" on:click|preventDefault={() => goto('/web/pc-ready')}>
+            PC Ready
+        </a>
+
         <a class="sb-link" href="/web/simulasi-pc" on:click|preventDefault={() => goto('/web/simulasi-pc')}>
             Simulasi PC
         </a>
-        
-        </nav>
+
+        <a class="sb-link" href="/web/cart" on:click|preventDefault={() => goto('/web/cart')}>
+            Keranjang ({$cart.length})
+        </a>
+
+        <a class="sb-link" href="/web/wishlist" on:click|preventDefault={() => goto('/web/wishlist')}>
+            Wishlist
+        </a>
+
+        {#if $isLoggedIn}
+            <a class="sb-link" href="/web/profile" on:click|preventDefault={() => goto('/web/profile')}>
+                Profil & Pesanan ({$user?.name || 'Member'})
+            </a>
+            {#if $user?.is_vendor}
+                <a class="sb-link" href="/web/dashboard" on:click|preventDefault={() => goto('/web/dashboard')}>
+                    Dashboard Toko
+                </a>
+            {:else}
+                <a class="sb-link" href="/registervendor" on:click|preventDefault={() => goto('/registervendor')}>
+                    Buka Toko Vendor
+                </a>
+            {/if}
+            <button type="button" class="sb-link" style="color: #f87171;" on:click={handleLogout}>
+                Keluar Akun
+            </button>
+        {:else}
+            <a class="sb-link" href="/login" on:click|preventDefault={() => goto('/login')}>
+                Masuk / Login
+            </a>
+            <a class="sb-link" href="/register" on:click|preventDefault={() => goto('/register')}>
+                Daftar Akun
+            </a>
+        {/if}
+    </nav>
 
     <footer class="sb-footer">
         <a href="/web" on:click|preventDefault={() => goto('/web')}>Beranda</a>
-        <a href="/web/contact" on:click|preventDefault={() => goto('/web/contact')}>Contact</a>
+        <a href="/" on:click|preventDefault={() => goto('/')}>Halaman Utama</a>
     </footer>
 </aside>
 
@@ -108,12 +156,34 @@
         display: flex;
         flex-direction: column;
         padding: 16px;
+        overflow-y: auto;
         box-shadow: 8px 0 30px rgba(0,0,0,0.4);
     }
 
-    .sb-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+    .sb-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
     .sb-title { font-weight: 800; font-size: 1.5rem; letter-spacing: -0.5px; }
     .sb-close { background: transparent; border: none; color: #fff; font-size: 1.25rem; cursor: pointer; padding: 4px; }
+
+    .sb-search { display: flex; gap: 8px; margin-bottom: 16px; }
+    .sb-search input {
+        flex: 1;
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 8px;
+        padding: 9px 12px;
+        color: #fff;
+        font-size: 0.9rem;
+        outline: none;
+    }
+    .sb-search button {
+        background: #8E42E1;
+        border: none;
+        border-radius: 8px;
+        color: #fff;
+        font-weight: 700;
+        padding: 0 14px;
+        cursor: pointer;
+    }
 
     .sb-nav { display: flex; flex-direction: column; gap: 8px; }
     

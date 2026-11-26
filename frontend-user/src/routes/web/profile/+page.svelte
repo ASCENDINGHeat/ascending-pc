@@ -2,14 +2,15 @@
     import { onMount, onDestroy } from 'svelte';
     import { goto } from '$app/navigation';
     import { PUBLIC_API_URL } from '$env/static/public';
+    import { user as authUser, normalizeUser, logout } from '$lib/stores/auth';
 
     // --- State ---
     let activeTab = 'profile';
     let isLoading = true;
     let isEditing = false;
     let isSaving = false;
-    let isRefreshing = false; // New state for refresh button
-    let pollInterval;
+    let isRefreshing = false;
+    let pollInterval: ReturnType<typeof setInterval> | undefined;
     // Data User
     let userProfile = {
         name: '',
@@ -29,7 +30,7 @@
     let orderPagination: any = {};
 
     function formatRupiah(number: number) {
-        return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
+        return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(Number(number || 0));
     }
 
     function formatDate(dateString: string) {
@@ -43,6 +44,7 @@
         if (s === '1') return { label: 'Menunggu Pembayaran', class: 'bg-yellow-100 text-yellow-700' };
         if (s === '2') return { label: 'Lunas', class: 'bg-green-100 text-green-700' };
         if (s === '3') return { label: 'Dibatalkan / Kadaluarsa', class: 'bg-red-100 text-red-700' };
+        if (s === '4') return { label: 'Refunded', class: 'bg-blue-100 text-blue-700' };
         return { label: 'Unknown', class: 'bg-gray-100 text-gray-600' };
     };
 
@@ -52,9 +54,19 @@
             headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
         });
         if (userRes.ok) {
-            userProfile = await userRes.json();
+            const raw = await userRes.json();
+            const normalized = normalizeUser(raw);
+            if (normalized) {
+                userProfile = {
+                    name: normalized.name || '',
+                    email: normalized.email || '',
+                    phone_number: normalized.phone_number || '',
+                    address: normalized.address || ''
+                };
+                authUser.set(normalized);
+            }
         } else {
-            localStorage.removeItem('auth_token');
+            await logout();
             goto('/login');
         }
     }
@@ -104,25 +116,24 @@
         startPolling();
     });
     onDestroy(() => {
-    if (pollInterval) clearInterval(pollInterval);
+        if (pollInterval) clearInterval(pollInterval);
     });
     function startPolling() {
-    pollInterval = setInterval(() => {
-        // Cek apakah ada order yang statusnya '1' (Pending)
-        const hasPending = orders.some(o => String(o.payment_status) === '1');
-        
-        if (hasPending && !isEditing && activeTab === 'orders') {
-            // Lakukan fetch diam-diam (tanpa loading spinner penuh)
-            const token = localStorage.getItem('auth_token');
-            if (token) fetchOrdersData(token); 
-        }
-    }, 5000); // Cek setiap 5 detik
-}
-    function payOrder(snapToken: string) {
-        if(snapToken) {
-            window.open(`https://app.sandbox.midtrans.com/snap/v2/vtweb/${snapToken}`, '_blank');
+        pollInterval = setInterval(() => {
+            const hasPending = orders.some(o => String(o.payment_status) === '1');
+            if (hasPending && !isEditing && activeTab === 'orders') {
+                const token = localStorage.getItem('auth_token');
+                if (token) fetchOrdersData(token); 
+            }
+        }, 5000);
+    }
+
+    function payOrder(order: any) {
+        const targetUrl = order?.redirect_url || order?.snap_redirect_url || (order?.snap_token ? `https://app.sandbox.midtrans.com/snap/v2/vtweb/${order.snap_token}` : '');
+        if (targetUrl) {
+            window.open(targetUrl, '_blank');
         } else {
-            alert("Token pembayaran tidak ditemukan.");
+            alert("Tautan pembayaran tidak ditemukan.");
         }
     }
 
@@ -152,11 +163,21 @@
             const data = await res.json();
 
             if (res.ok) {
-                userProfile = data.user;
+                const normalized = normalizeUser(data.user || data);
+                if (normalized) {
+                    userProfile = {
+                        name: normalized.name || '',
+                        email: normalized.email || '',
+                        phone_number: normalized.phone_number || '',
+                        address: normalized.address || ''
+                    };
+                    authUser.set(normalized);
+                }
                 isEditing = false;
                 alert('Profil berhasil diperbarui!');
             } else {
-                alert(data.message || 'Gagal memperbarui profil.');
+                const errDetails = data.errors ? '\n' + Object.values(data.errors).flat().join('\n') : '';
+                alert((data.message || 'Gagal memperbarui profil.') + errDetails);
             }
         } catch (error) {
             console.error("Error updating profile:", error);
@@ -186,7 +207,7 @@
             <aside class="w-full md:w-[280px] bg-white rounded-xl shadow-sm overflow-hidden flex-shrink-0">
                 <div class="p-8 text-center bg-gradient-to-br from-slate-800 to-slate-900 text-white">
                     <div class="w-20 h-20 bg-purple-600 text-white rounded-full flex items-center justify-center text-4xl font-bold mx-auto mb-4 border-4 border-white/20">
-                        {userProfile.name.charAt(0).toUpperCase()}
+                        {(userProfile.name || 'U').charAt(0).toUpperCase()}
                     </div>
                     <h3 class="m-0 text-lg font-bold">{userProfile.name}</h3>
                     <p class="m-0 mt-1 text-sm opacity-80">{userProfile.email}</p>
@@ -204,8 +225,8 @@
                     </button>
                     <div class="h-px bg-slate-100 my-2"></div>
                     <button class="w-full text-left p-3 rounded-lg font-semibold text-sm text-red-500 hover:bg-red-50 transition-colors" 
-                        on:click={() => {
-                            localStorage.removeItem('auth_token');
+                        on:click={async () => {
+                            await logout(PUBLIC_API_URL);
                             goto('/login');
                         }}>
                         🚪 Logout
@@ -321,7 +342,7 @@
                                         <div class="px-5 py-3 bg-white border-t border-dashed border-slate-200 flex justify-between items-center">
                                             <div>
                                                 {#if String(order.payment_status) === '1'}
-                                                    <button class="bg-purple-600 text-white border-none px-4 py-2 rounded-lg cursor-pointer font-semibold text-sm hover:bg-purple-700 transition-colors" on:click={() => payOrder(order.snap_token)}>
+                                                    <button class="bg-purple-600 text-white border-none px-4 py-2 rounded-lg cursor-pointer font-semibold text-sm hover:bg-purple-700 transition-colors" on:click={() => payOrder(order)}>
                                                         Bayar Sekarang
                                                     </button>
                                                 {/if}

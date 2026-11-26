@@ -18,21 +18,21 @@ class ParentOrderResource extends JsonResource
     {
         return [
             'parent_order_id' => $this->id,
+            'midtrans_order_id' => $this->midtrans_order_id,
             'user_id' => $this->user_id,
-            'total_amount' => number_format($this->total_amount, 2),
+            'total_amount' => (float) $this->total_amount,
+            'admin_fee' => (float) ($this->admin_fee ?? 0),
             'payment_status' => $this->payment_status,
-            'created_at' => $this->created_at->toDateTimeString(),
+            'redirect_url' => $this->redirect_url,
+            'created_at' => $this->created_at?->toISOString(),
 
-            // Nested Vendor Orders (using the collection method)
             'vendor_shipments' => VendorOrderResource::collection($this->whenLoaded('vendorOrders')),
             'shipping_info' => [
-                'name' => $this->user->name,
-                'email' => $this->user->email,
-                'address' => $this->user->address,
-                'phone' => $this->user->phone,
+                'name' => $this->user?->name,
+                'email' => $this->user?->email,
+                'address' => $this->shipping_address ?? $this->user?->address,
+                'phone_number' => $this->recipient_phone ?? $this->user?->phone_number,
             ],
-            // You could include shipping address information here
-            // 'shipping_address' => '...',
         ];
     }
 }

@@ -40,7 +40,7 @@ class AuthController extends Controller
             'email' => 'required|string|email|max:255|unique:users',
             'password' => 'required|string|min:8|confirmed',
             'phone_number' => 'nullable|string|max:20',
-            'address' => 'nullable|string'
+            'address' => 'nullable|string|max:1000'
         ]);
 
         $user = \App\Models\User::create([
@@ -51,7 +51,7 @@ class AuthController extends Controller
             'address' => $valid['address'] ?? null,
         ]);
 
-        $token = $user-> createToken('auth_token')->plainTextToken;
+        $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
             'message' => 'User registered',
@@ -65,21 +65,16 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
-        // Validate input
+        // Validate only fields provided in the request so omitted nullable fields are preserved
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'required|email|max:255|unique:users,email,' . $user->id,
-            'phone_number' => 'nullable|string|max:20',
-            'address' => 'nullable|string|max:1000',
+            'name' => 'sometimes|required|string|max:255',
+            'email' => 'sometimes|required|email|max:255|unique:users,email,' . $user->id,
+            'phone_number' => 'sometimes|nullable|string|max:20',
+            'address' => 'sometimes|nullable|string|max:1000',
         ]);
 
-        // Update user
-        $user->update([
-            'name' => $validated['name'],
-            'email' => $validated['email'],
-            'phone_number' => $validated['phone_number'] ?? null,
-            'address' => $validated['address'] ?? null,
-        ]);
+        $user->fill($validated);
+        $user->save();
 
         return response()->json([
             'message' => 'Profil berhasil diperbarui',

@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
 	import { PUBLIC_API_URL } from '$env/static/public';
-	import { user, isLoggedIn } from '$lib/stores/auth';
+	import { setAuth } from '$lib/stores/auth';
 
 	let email = '';
 	let password = '';
@@ -29,11 +29,8 @@
 			});
 			const data = await response.json();
 
-			if (response.ok) {
-				localStorage.setItem('auth_token', data.access_token);
-				localStorage.setItem('user_data', JSON.stringify(data.user));
-				user.set(data.user);
-				isLoggedIn.set(true);
+			if (response.ok && data.access_token) {
+				setAuth(data.access_token, data.user);
 				goto('/web');
 			} else {
 				errorMessage = data.message || 'Login gagal. Periksa kembali identitas anda';

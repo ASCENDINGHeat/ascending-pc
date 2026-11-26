@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { browser } from '$app/environment';
 
 export type CartItem = {
 	id: string;       // ID Cart (Primary Key)
@@ -10,8 +11,37 @@ export type CartItem = {
 	stock?: number;
 };
 
+let initialSelectedIds: string[] = [];
+if (browser) {
+	try {
+		const raw = sessionStorage.getItem('selected_cart_ids');
+		if (raw && raw !== 'undefined' && raw !== 'null') {
+			const parsed = JSON.parse(raw);
+			if (Array.isArray(parsed)) {
+				initialSelectedIds = parsed.map(String);
+			}
+		}
+	} catch {
+		initialSelectedIds = [];
+	}
+}
+
 export const cart = writable<CartItem[]>([]);
-export const selectedItemIds = writable<string[]>([]);
+export const selectedItemIds = writable<string[]>(initialSelectedIds);
+
+if (browser) {
+	selectedItemIds.subscribe(ids => {
+		try {
+			if (ids && ids.length > 0) {
+				sessionStorage.setItem('selected_cart_ids', JSON.stringify(ids));
+			} else {
+				sessionStorage.removeItem('selected_cart_ids');
+			}
+		} catch {
+			// Ignore storage quota errors
+		}
+	});
+}
 
 export function mapApiCartItem(item: any): CartItem {
 	return {

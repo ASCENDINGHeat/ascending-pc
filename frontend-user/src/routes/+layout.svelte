@@ -6,8 +6,7 @@
 	import Header from '$lib/components/Header.svelte';
 	import Footer from '$lib/components/Footer.svelte';
     import { onMount } from 'svelte';
-    import { isLoggedIn } from '$lib/stores/auth';
-    import { user } from '$lib/stores/user';
+    import { isLoggedIn, user, normalizeUser } from '$lib/stores/auth';
     import { cart, mapApiCartItem } from '$lib/stores/cart';
     import { get } from 'svelte/store';
     import { PUBLIC_API_URL, PUBLIC_STORAGE_URL } from '$env/static/public';
@@ -25,7 +24,6 @@
     }
 
 	async function fetchUser(token: string) {
-        // [SOLUSI UTAMA] Cek apakah data user sudah ada di store
         if (get(user)) return;
 
         try {
@@ -38,25 +36,20 @@
 
             if (res.ok) {
                 const result = await res.json();
-                const userData = result.data || result;
-                
-                // Handle URL Avatar
-                if (userData.avatar && !userData.avatar.startsWith('http')) {
-                    const baseUrl = PUBLIC_STORAGE_URL
-                        ? (PUBLIC_STORAGE_URL.endsWith('/') ? PUBLIC_STORAGE_URL : `${PUBLIC_STORAGE_URL}/`)
-                        : 'http://127.0.0.1:8000/';
-                    userData.avatar = `${baseUrl}storage/${userData.avatar}`;
+                const normalized = normalizeUser(result);
+                if (normalized) {
+                    if (normalized.avatar && !normalized.avatar.startsWith('http')) {
+                        const baseUrl = PUBLIC_STORAGE_URL
+                            ? (PUBLIC_STORAGE_URL.endsWith('/') ? PUBLIC_STORAGE_URL : `${PUBLIC_STORAGE_URL}/`)
+                            : 'http://127.0.0.1:8000/';
+                        normalized.avatar = `${baseUrl}storage/${normalized.avatar}`;
+                    }
+                    user.set(normalized);
                 }
-
-                // SIMPAN KE STORE 
-                user.set({
-                    id: userData.id,
-                    name: userData.name,
-                    email: userData.email,
-                    avatar: userData.avatar,
-                    phone: userData.phone ?? userData.phone_number,
-                    is_vendor: Boolean(userData.is_vendor) 
-                });
+            } else if (res.status === 401) {
+                localStorage.removeItem('auth_token');
+                user.set(null);
+                isLoggedIn.set(false);
             }
         } catch (e) {
             console.error("Gagal load user:", e);
