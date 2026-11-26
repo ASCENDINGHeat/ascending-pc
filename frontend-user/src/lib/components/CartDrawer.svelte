@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { fly, fade } from 'svelte/transition';
 	import { goto } from '$app/navigation';
-	import { cart, removeFromCart, selectedItemIds } from '$lib/stores/cart';
+	import { cart, removeFromCart, selectedItemIds, mapApiCartItem } from '$lib/stores/cart';
 	import { createEventDispatcher } from 'svelte';
 	import { PUBLIC_API_URL } from '$env/static/public';
 
@@ -39,17 +39,7 @@
 
             if (res.ok) {
                 const data = await res.json();
-                // Map API response to CartItem type
-                const mappedItems = (data.data || []).map((item: any) => ({
-                    id: String(item.id),
-                    product_id: item.product_id,
-                    name: item.product?.title || 'Unknown Product',
-                    price: Number(item.product?.price || 0),
-                    image: item.product?.image_url || '/images/placeholder.png',
-                    quantity: item.quantity,
-                    stock: item.product?.stock_quantity
-                }));
-                cart.set(mappedItems);
+                cart.set((data.data || []).map(mapApiCartItem));
             }
         } catch (e) {
             console.error("Failed to sync cart:", e);
@@ -114,7 +104,7 @@
 
 		try {
 			const token = localStorage.getItem('auth_token');
-			await fetch(`${PUBLIC_API_URL}/cart/update/${item.id}`, {
+			const res = await fetch(`${PUBLIC_API_URL}/cart/update/${item.id}`, {
 				method: 'PUT',
 				headers: {
 					'Content-Type': 'application/json',
@@ -123,6 +113,9 @@
 				},
 				body: JSON.stringify({ quantity: newQty })
 			});
+			if (!res.ok) {
+				cart.update(items => items.map(i => i.id === item.id ? { ...i, quantity: oldQty } : i));
+			}
 		} catch (e) {
             // Rollback quantity on error
 			cart.update(items => items.map(i => i.id === item.id ? { ...i, quantity: oldQty } : i));

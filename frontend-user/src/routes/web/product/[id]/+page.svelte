@@ -110,13 +110,17 @@
             const result = await res.json();
 
             if (res.ok) {
-                addToLocalCart({
-                    id: product.id,
-                    name: product.name,
-                    price: product.price,
-                    image: product.image,
-                    quantity
-                });
+                if (result.data?.id) {
+                    addToLocalCart({
+                        id: String(result.data.id),
+                        product_id: Number(product.id),
+                        name: product.name,
+                        price: Number(product.price),
+                        image: product.image,
+                        quantity,
+                        stock: product.stock
+                    });
+                }
                 goto('/web/cart');
             } else {
                 alert(result.message || "Gagal menambahkan ke keranjang.");

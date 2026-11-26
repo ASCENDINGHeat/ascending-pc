@@ -129,14 +129,9 @@ cd backend-API
 # 1. Install PHP dependencies
 composer install
 
-# 2. Create environment file
+# 2. Create environment file and configure DB + Midtrans keys
 cp .env.example .env
-```
 
-> [!WARNING]
-> Before running Artisan commands, open `backend-API/.env` and remove the trailing inline text `<-- Ganti dengan Key Sandbox Anda` on line 67 (`MIDTRANS_SERVER_KEY`), or prefix it with `#`. Unquoted spaces in `.env` will cause a `Dotenv\Exception\InvalidFileException`.
-
-```bash
 # 3. Generate application key & public storage symlink
 php artisan key:generate
 php artisan storage:link
@@ -156,11 +151,8 @@ cd frontend-user
 # 1. Install Node dependencies
 npm install
 
-# 2. Create .env (required at compile time by $env/static/public)
-cat << 'EOF' > .env
-PUBLIC_API_URL=http://127.0.0.1:8000/api
-PUBLIC_STORAGE_URL=http://127.0.0.1:8000
-EOF
+# 2. Copy environment template (required at compile time by $env/static/public)
+cp .env.example .env
 
 # 3. Start Vite dev server (http://localhost:5173)
 npm run dev

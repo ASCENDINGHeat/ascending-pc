@@ -175,7 +175,12 @@ class ProductController extends Controller
     public function update(Request $request, $id)
     {
         $product = Product::find($id);
-        if (!Auth::user()->vendor || $product->vendor_id !== Auth::user()->vendor->id){
+        if (!$product) {
+            return response()->json(['message' => 'Product not found'], 404);
+        }
+
+        $user = Auth::user();
+        if (!$user->vendor || $product->vendor_id !== $user->vendor->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -190,9 +195,9 @@ class ProductController extends Controller
             'category'       => 'sometimes|string',
 
             // Images (Optional updates)
-            'image'          => 'nullable|image|max:2048',     // Replace main image
-            'images'         => 'nullable|array',             // Append to gallery
-            'images.*'       => 'image|max:2048',
+            'image'          => 'nullable|image|mimes:jpeg,png,jpg,webp|max:2048',     // Replace main image
+            'images'         => 'nullable|array',                                      // Append to gallery
+            'images.*'       => 'image|mimes:jpeg,png,jpg,webp|max:2048',
 
             // precise logic to remove specific gallery images
             'remove_gallery_images' => 'nullable|array',
@@ -231,7 +236,7 @@ class ProductController extends Controller
         // 6. Handle Main Image Replacement
         if ($request->hasFile('image')) {
             // Optional: Delete old image to save space
-            if (!empty($currentDetails['images']['main'])) {
+            if (!empty($currentDetails['images']['main']) && !str_starts_with($currentDetails['images']['main'], 'http')) {
                 Storage::disk('public')->delete($currentDetails['images']['main']);
             }
             // Store new image
@@ -239,16 +244,21 @@ class ProductController extends Controller
         }
 
         // 7. Handle Gallery Updates
-        // A. Remove selected images
+        // A. Remove selected images (strictly scoped to this product's gallery)
         if ($request->has('remove_gallery_images')) {
-            $pathsToRemove = $request->input('remove_gallery_images');
+            $pathsToRemove = $request->input('remove_gallery_images', []);
             $currentGallery = $updatedDetails['images']['gallery'] ?? [];
 
-            // Filter out the paths user wants to remove
-            $updatedDetails['images']['gallery'] = array_values(array_diff($currentGallery, $pathsToRemove));
+            $validPathsToRemove = array_values(array_intersect($currentGallery, $pathsToRemove));
+            $updatedDetails['images']['gallery'] = array_values(array_diff($currentGallery, $validPathsToRemove));
 
-            // Physically delete files
-            Storage::disk('public')->delete($pathsToRemove);
+            $diskPathsToDelete = array_values(array_filter(
+                $validPathsToRemove,
+                fn ($p) => !empty($p) && !str_starts_with($p, 'http')
+            ));
+            if (!empty($diskPathsToDelete)) {
+                Storage::disk('public')->delete($diskPathsToDelete);
+            }
         }
 
         // B. Append new images
@@ -265,6 +275,50 @@ class ProductController extends Controller
         return response()->json([
             'message' => 'Product updated successfully',
             'data' => $product
+        ], 200);
+    }
+
+    public function destroy($id)
+    {
+        $product = Product::find($id);
+        if (!$product) {
+            return response()->json(['message' => 'Product not found'], 404);
+        }
+
+        $user = Auth::user();
+        if (!$user->vendor || $product->vendor_id !== $user->vendor->id) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        if (\App\Models\OrderItem::where('product_id', $product->id)->exists()) {
+            return response()->json([
+                'message' => 'Cannot delete product with existing order history. Set stock to 0 instead.'
+            ], 409);
+        }
+
+        $details = $product->details ?? [];
+        $filesToDelete = [];
+
+        if (!empty($details['images']['main']) && !str_starts_with($details['images']['main'], 'http')) {
+            $filesToDelete[] = $details['images']['main'];
+        }
+
+        if (!empty($details['images']['gallery']) && is_array($details['images']['gallery'])) {
+            foreach ($details['images']['gallery'] as $galleryPath) {
+                if (!empty($galleryPath) && !str_starts_with($galleryPath, 'http')) {
+                    $filesToDelete[] = $galleryPath;
+                }
+            }
+        }
+
+        $product->delete();
+
+        if (!empty($filesToDelete)) {
+            Storage::disk('public')->delete($filesToDelete);
+        }
+
+        return response()->json([
+            'message' => 'Product deleted successfully'
         ], 200);
     }
 }

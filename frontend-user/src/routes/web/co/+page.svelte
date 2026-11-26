@@ -1,26 +1,27 @@
 <script lang="ts">
     import { goto } from '$app/navigation';
     import { onMount, onDestroy } from 'svelte';
-    import { cart, selectedItemIds } from '$lib/stores/cart'; 
+    import { cart, selectedItemIds, removeFromCart } from '$lib/stores/cart'; 
     // Import store user
     import { user } from '$lib/stores/auth';
     import { PUBLIC_API_URL } from '$env/static/public';
 
     // --- 1. Filter Item: Hanya ambil yang ID-nya ada di selectedItemIds ---
-    $: cartItems = $cart.filter(item => $selectedItemIds.includes(item.id));
+    $: cartItems = $cart.filter(item => $selectedItemIds.includes(String(item.id)));
     
     // --- 2. Data Pembeli: Integrasi dengan Store User ---
     // Gunakan reactive statement ($:) agar otomatis berubah saat data user berhasil di-fetch
     $: buyerInfo = {
         name: $user?.name || "Memuat data user...",
         email: $user?.email || "Memuat email...", 
-        address: "Alamat pengiriman belum disetting", 
-        phone: "-" 
+        address: $user?.address || "Alamat pengiriman belum disetting", 
+        phone: $user?.phone_number || "-" 
     };
 
     let isLoading = false;
     let paymentUrl = "";
     let errorMessage = "";
+    let checkedOutIds: string[] = [];
 
     // --- 3. Perhitungan Biaya ---
     $: subTotal = cartItems.reduce((sum, item) => sum + (Number(item.price) * item.quantity), 0);
@@ -71,11 +72,18 @@
             const token = localStorage.getItem('auth_token');
             if (!token) {
                 alert("Sesi habis, silakan login kembali.");
-                goto('/web/login');
+                goto('/login');
                 return;
             }
 
-            const selected_ids_payload = cartItems.map(item => item.id);
+            const selected_ids_payload = cartItems
+                .map(item => Number(item.id))
+                .filter(id => Number.isInteger(id) && id > 0);
+
+            if (selected_ids_payload.length === 0) {
+                errorMessage = "Data keranjang tidak sinkron. Silakan muat ulang halaman keranjang.";
+                return;
+            }
 
             const response = await fetch(`${PUBLIC_API_URL}/checkout`, {
                 method: 'POST',
@@ -92,6 +100,7 @@
             const data = await response.json();
 
             if (response.ok) {
+                checkedOutIds = selected_ids_payload.map(String);
                 paymentUrl = data.redirect_url;
             } else {
                 errorMessage = data.message || "Checkout gagal.";
@@ -124,12 +133,15 @@
             await fetchUserProfile();
         } else if (!token) {
             alert("Anda belum login.");
-            goto('/web/login');
+            goto('/login');
         }
     });
 
     onDestroy(() => {
         if (typeof document !== 'undefined') document.body.style.overflow = '';
+        if (checkedOutIds.length > 0) {
+            checkedOutIds.forEach(id => removeFromCart(id));
+        }
     });
 </script>
 

@@ -8,7 +8,7 @@
     import { onMount } from 'svelte';
     import { isLoggedIn } from '$lib/stores/auth';
     import { user } from '$lib/stores/user';
-    import { cart } from '$lib/stores/cart';
+    import { cart, mapApiCartItem } from '$lib/stores/cart';
     import { get } from 'svelte/store';
     import { PUBLIC_API_URL, PUBLIC_STORAGE_URL } from '$env/static/public';
 
@@ -42,7 +42,9 @@
                 
                 // Handle URL Avatar
                 if (userData.avatar && !userData.avatar.startsWith('http')) {
-                    const baseUrl = PUBLIC_STORAGE_URL.endsWith('/') ? PUBLIC_STORAGE_URL : `${PUBLIC_STORAGE_URL}/`;
+                    const baseUrl = PUBLIC_STORAGE_URL
+                        ? (PUBLIC_STORAGE_URL.endsWith('/') ? PUBLIC_STORAGE_URL : `${PUBLIC_STORAGE_URL}/`)
+                        : 'http://127.0.0.1:8000/';
                     userData.avatar = `${baseUrl}storage/${userData.avatar}`;
                 }
 
@@ -52,7 +54,7 @@
                     name: userData.name,
                     email: userData.email,
                     avatar: userData.avatar,
-                    phone: userData.phone,
+                    phone: userData.phone ?? userData.phone_number,
                     is_vendor: Boolean(userData.is_vendor) 
                 });
             }
@@ -71,19 +73,15 @@
     async function fetchCart(token: string) {
         try {
             const res = await fetch(`${PUBLIC_API_URL}/cart`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/json'
+                }
             });
 
             if (res.ok) {
                 const data = await res.json();
-                const mappedData = data.data.map((item: any) => ({
-                    id: item.product_id,
-                    name: item.product.name,
-                    price: item.product.price,
-                    image: item.product.image,
-                    quantity: item.quantity,
-                    stock: item.product.stock
-                }));
+                const mappedData = (data.data || []).map(mapApiCartItem);
                 cart.set(mappedData);
             }
         } catch (e) {

@@ -12,79 +12,96 @@ use Illuminate\Validation\ValidationException;
 use App\Models\Cart;
 use Illuminate\Support\Facades\Auth;
 use App\Models\User;
+use App\Models\Product;
 use Midtrans\Snap;
 use Midtrans\Config;
 use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
-    // app/Http/Controllers/Api/OrderController.php
-
     public function checkout(Request $request)
     {
-        // Ensure the user is authenticated and has payment info/address handled by a Request object.
         $user = $request->user();
         $request->validate([
-            'selected_cart_ids' => 'required|array|min:1', // Harus array dan minimal 1
-            'selected_cart_ids.*' => 'integer|exists:cart,id', // Pastikan ID valid
+            'selected_cart_ids' => 'required|array|min:1',
+            'selected_cart_ids.*' => 'integer|exists:cart,id',
         ]);
 
-        // --- ADD THIS DEBUGGING CODE ---
-        Log::info('--- MIDTRANS CHECKOUT DEBUG ---');
-        // Check what is actually loaded in the config
-        Log::info('Config Server Key: ' . config('midtrans.server_key')); 
-        Log::info('Is Production: ' . config('midtrans.is_production'));
-        // -------------------------------
+        if (empty(config('midtrans.server_key'))) {
+            Log::critical('Checkout aborted: MIDTRANS_SERVER_KEY is not configured.');
+            return response()->json([
+                'message' => 'Payment gateway is not configured.'
+            ], 500);
+        }
 
-        // Start a transaction to prevent partial order creation if an error occurs.
-        DB::beginTransaction();
+        $parentOrder = null;
+        $calculatedTotal = 0;
 
         try {
-            // 1. Fetch Cart and Pre-Checks
+            // Phase 1: Atomic DB order creation & inventory reservation (no external HTTP inside lock)
+            DB::beginTransaction();
+
             $cartItems = Cart::with('product.vendor')
-                ->whereIn('id', $request->selected_cart_ids) // Filter ID yang dicentang
-                ->where('user_id', $user->id) // Security: Pastikan punya user sendiri
+                ->whereIn('id', $request->selected_cart_ids)
+                ->where('user_id', $user->id)
                 ->get();
 
             if ($cartItems->isEmpty()) {
-                throw new ValidationException(['cart' => 'Your cart is empty.']);
+                throw ValidationException::withMessages([
+                    'cart' => ['Your cart is empty.']
+                ]);
             }
 
-            // ** (Inventory/Stock Check & Price Validation should occur here) **
-            // Check if all products are in stock and if the current cart price matches the product's database price.
+            // Lock all involved products in deterministic ID order to prevent deadlocks & overselling
+            $productIds = $cartItems->pluck('product_id')->unique()->sort()->values();
+            $lockedProducts = Product::whereIn('id', $productIds)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
 
-            $calculatedTotal = 0;
+            // Aggregate quantities per product in case multiple cart rows reference the same product
+            $requestedByProduct = $cartItems->groupBy('product_id')->map(fn ($rows) => $rows->sum('quantity'));
+            foreach ($requestedByProduct as $productId => $totalRequestedQty) {
+                $lockedProduct = $lockedProducts->get($productId);
+                if (!$lockedProduct) {
+                    throw ValidationException::withMessages([
+                        'cart' => ["Product #{$productId} is no longer available."]
+                    ]);
+                }
+                if ($totalRequestedQty <= 0 || $lockedProduct->stock_quantity < $totalRequestedQty) {
+                    throw ValidationException::withMessages([
+                        'stock' => ["Stok tidak mencukupi untuk '{$lockedProduct->title}'. Tersedia: {$lockedProduct->stock_quantity}, diminta: {$totalRequestedQty}."]
+                    ]);
+                }
+            }
+
             foreach ($cartItems as $item) {
-                $calculatedTotal += $item->quantity * $item->product->price;
+                $lockedProduct = $lockedProducts->get($item->product_id);
+                $calculatedTotal += $item->quantity * $lockedProduct->price;
             }
-            $vendorGroups = $cartItems->groupBy('product.vendor_id');
+
+            $vendorGroups = $cartItems->groupBy(fn ($item) => $lockedProducts->get($item->product_id)->vendor_id);
 
             $parentOrder = ParentOrder::create([
                 'user_id' => $user->id,
                 'total_amount' => $calculatedTotal,
-                'payment_status' => '1', // Atau '1' sesuai enum migration Anda
-                'snap_token' => null, // Nanti diupdate
+                'payment_status' => '1',
+                'snap_token' => null,
             ]);
 
-
-
-            $finalTotal = 0;
-
-            // 4. Create Vendor Orders and Order Items
             foreach ($vendorGroups as $vendorId => $items) {
                 $vendorOrderTotal = 0;
 
-                // Calculate subtotal for the current vendor
                 foreach ($items as $item) {
-                    $vendorOrderTotal += $item->quantity * $item->product->price;
+                    $lockedProduct = $lockedProducts->get($item->product_id);
+                    $vendorOrderTotal += $item->quantity * $lockedProduct->price;
                 }
 
-                $commissionRate = 0.10; // Example: 10% commission rate
+                $commissionRate = 0.10;
                 $commissionFee = round($vendorOrderTotal * $commissionRate, 2);
                 $netAmount = round($vendorOrderTotal - $commissionFee, 2);
-                $finalTotal += $vendorOrderTotal;
 
-                // Create Vendor Order (Shipment Group)
                 $vendorOrder = VendorOrder::create([
                     'parent_order_id' => $parentOrder->id,
                     'vendor_id' => $vendorId,
@@ -94,68 +111,96 @@ class OrderController extends Controller
                     'shipping_status' => 'pending',
                 ]);
 
-                // Create Order Items
                 foreach ($items as $item) {
+                    $lockedProduct = $lockedProducts->get($item->product_id);
                     OrderItem::create([
                         'vendor_order_id' => $vendorOrder->id,
                         'product_id' => $item->product_id,
                         'quantity' => $item->quantity,
-                        'unit_price' => $item->product->price,
+                        'unit_price' => $lockedProduct->price,
                     ]);
-                    $item->product->decrement('stock_quantity', $item->quantity);
+                    $lockedProduct->decrement('stock_quantity', $item->quantity);
                 }
             }
-            $params = [
-                'transaction_details' => [
-                    'order_id' => $parentOrder->id, // Gunakan ID Parent Order
-                    'gross_amount' => (int) $calculatedTotal + 4000, // Pastikan Integer
-                ],
-                'customer_details' => [
-                    'first_name' => $user->name,
-                    'email' => $user->email,
-                    // 'phone' => $user->phone, // Tambahkan jika ada kolom phone
-                ],
-                // Opsional: Tambahkan item_details jika ingin rincian di email Midtrans
-            ];
-            $snapToken = Snap::getSnapToken($params);
 
-            // 5. Simpan Token ke Database
-            $parentOrder->update(['snap_token' => $snapToken]);
-            // 5. Update Parent Order Total
-            // $parentOrder->update(['total_amount' => $finalTotal]);
-
-            // 6. Clear the Cart
-            Cart::whereIn('id', $request->selected_cart_ids)
-                ->where('user_id', $user->id)
-                ->delete();
-
-            // Commit all changes to the database
             DB::commit();
-
-
-
-            return response()->json([
-                'status' => 'success',
-                'message' => 'Order created, waiting for payment',
-                'snap_token' => $snapToken, // INI YANG PENTING
-                'order_id' => $parentOrder->id,
-                'redirect_url' => "https://app.sandbox.midtrans.com/snap/v2/vtweb/" . $snapToken
-            ], 201);
         } catch (ValidationException $e) {
             DB::rollBack();
             return response()->json(['message' => 'Checkout failed.', 'errors' => $e->errors()], 422);
         } catch (\Exception $e) {
             DB::rollBack();
-            
-            // --- THIS WRITES TO storage/logs/laravel.log ---
-            \Illuminate\Support\Facades\Log::error('Checkout Failed: ' . $e->getMessage());
-            \Illuminate\Support\Facades\Log::error($e->getTraceAsString()); // Optional: see full error trace
-            // -----------------------------------------------
+            Log::error('Checkout DB Phase Failed: ' . $e->getMessage(), ['exception' => $e]);
 
-            return response()->json(['message' => 'An unexpected error occurred during checkout.', 'error' => $e->getMessage()], 500);
+            $payload = ['message' => 'An unexpected error occurred during checkout.'];
+            if (config('app.debug')) {
+                $payload['error'] = $e->getMessage();
+            }
+            return response()->json($payload, 500);
+        }
+
+        // Phase 2: Request Midtrans Snap Token outside DB row locks
+        try {
+            $params = [
+                'transaction_details' => [
+                    'order_id' => $parentOrder->id,
+                    'gross_amount' => (int) round((float) $calculatedTotal) + 4000,
+                ],
+                'customer_details' => [
+                    'first_name' => $user->name,
+                    'email' => $user->email,
+                ],
+            ];
+
+            $snapToken = Snap::getSnapToken($params);
+
+            DB::transaction(function () use ($parentOrder, $snapToken, $request, $user) {
+                $parentOrder->update(['snap_token' => $snapToken]);
+
+                Cart::whereIn('id', $request->selected_cart_ids)
+                    ->where('user_id', $user->id)
+                    ->delete();
+            });
+
+            $snapBaseUrl = config('midtrans.is_production')
+                ? 'https://app.midtrans.com/snap/v2/vtweb/'
+                : 'https://app.sandbox.midtrans.com/snap/v2/vtweb/';
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Order created, waiting for payment',
+                'snap_token' => $snapToken,
+                'order_id' => $parentOrder->id,
+                'redirect_url' => $snapBaseUrl . $snapToken,
+            ], 201);
+        } catch (\Throwable $e) {
+            // Compensate: restore reserved inventory and remove unpayable order while keeping user's cart intact
+            try {
+                DB::transaction(function () use ($parentOrder) {
+                    $parentOrder->load('vendorOrders.orderItems.product');
+                    foreach ($parentOrder->vendorOrders as $vendorOrder) {
+                        foreach ($vendorOrder->orderItems as $orderItem) {
+                            if ($orderItem->product) {
+                                $orderItem->product->increment('stock_quantity', $orderItem->quantity);
+                            }
+                        }
+                        $vendorOrder->orderItems()->delete();
+                    }
+                    $parentOrder->vendorOrders()->delete();
+                    $parentOrder->delete();
+                });
+            } catch (\Throwable $rollbackError) {
+                Log::critical('Checkout compensation failed for ParentOrder #' . $parentOrder->id . ': ' . $rollbackError->getMessage());
+            }
+
+            Log::error('Midtrans Snap Token Generation Failed: ' . $e->getMessage(), ['order_id' => $parentOrder->id]);
+
+            $payload = ['message' => 'Failed to initialize payment gateway. Please try again.'];
+            if (config('app.debug')) {
+                $payload['error'] = $e->getMessage();
+            }
+            return response()->json($payload, 502);
         }
     }
-    // app/Http/Controllers/Api/OrderController.php
 
     public function index(Request $request)
     {
@@ -165,10 +210,14 @@ class OrderController extends Controller
 
         return response()->json($orders);
     }
-    // app/Http/Controllers/Api/OrderController.php
 
-    public function show(ParentOrder $parentOrder)
+    public function show($id)
     {
+        $parentOrder = ParentOrder::find($id);
+        if (!$parentOrder) {
+            return response()->json(['message' => 'Order not found.'], 404);
+        }
+
         // Policy/Authorization Check: Ensure the order belongs to the authenticated user
         if ($parentOrder->user_id !== auth()->id()) {
             return response()->json(['message' => 'Unauthorized.'], 403);
@@ -183,54 +232,80 @@ class OrderController extends Controller
     public function receive(Request $request)
     {
         $serverKey = config('midtrans.server_key');
-    
-        // Explicitly cast or format if necessary, but using the request input directly is usually safest
-        // IF valid payload is sent.
-        $hashedString = $request->order_id . $request->status_code . $request->gross_amount . $serverKey;
-        
-        $mySignature = hash('sha512', $hashedString);
-        $incomingSignature = $request->signature_key;
+        if (empty($serverKey) || !is_string($serverKey)) {
+            Log::critical('Midtrans callback rejected: MIDTRANS_SERVER_KEY is not configured.');
+            return response()->json(['message' => 'Payment gateway misconfigured'], 500);
+        }
 
-        // DEBUGGING: Log these to storage/logs/laravel.log to see the mismatch
-        Log::info("Midtrans Callback Debug:");
-        Log::info("My String to Hash: " . $hashedString);
-        Log::info("My Signature: " . $mySignature);
-        Log::info("Incoming Signature: " . $incomingSignature);
+        $orderId = (string) $request->input('order_id', '');
+        $statusCode = (string) $request->input('status_code', '');
+        $grossAmount = (string) $request->input('gross_amount', '');
+        $incomingSignature = (string) $request->input('signature_key', '');
 
-        if ($mySignature !== $incomingSignature) {
+        if ($orderId === '' || $statusCode === '' || $grossAmount === '' || $incomingSignature === '') {
+            return response()->json(['message' => 'Invalid callback payload'], 400);
+        }
+
+        $mySignature = hash('sha512', $orderId . $statusCode . $grossAmount . $serverKey);
+
+        if (!hash_equals($mySignature, $incomingSignature)) {
+            Log::warning('Midtrans callback rejected: invalid signature', ['order_id' => $orderId]);
             return response()->json(['message' => 'Invalid Signature'], 403);
         }
 
-        // --- MULAI DARI SINI DATA DIJAMIN AMAN ---
+        $transactionStatus = (string) $request->input('transaction_status', '');
+        $fraudStatus = (string) $request->input('fraud_status', '');
 
-        // 6. Cek Status Transaksi
-        $transactionStatus = $request->transaction_status;
-        $orderId = $request->order_id;
-
-        $order = ParentOrder::find($orderId);
-        if (!$order) {
-            return response()->json(['message' => 'Order not found'], 404);
-        }
-
-        // Logika update status database
-        if ($transactionStatus == 'capture' || $transactionStatus == 'settlement') {
-            // LUNAS
-            $order->update(['payment_status' => '2']); // Atau '2'
-            // Kurangi stok disini jika belum dikurangi saat checkout
-
-        } else if ($transactionStatus == 'expire' || $transactionStatus == 'cancel' || $transactionStatus == 'deny') {
-            // GAGAL
-            $order->update(['payment_status' => '3']); // Atau '3'
-            foreach ($order->vendorOrders as $vendorOrder) {
-                foreach ($vendorOrder->orderItems as $item) {
-                    $item->product->increment('stock_quantity', $item->quantity);
-                }
+        return DB::transaction(function () use ($orderId, $grossAmount, $transactionStatus, $fraudStatus) {
+            $order = ParentOrder::where('id', $orderId)->lockForUpdate()->first();
+            if (!$order) {
+                return response()->json(['message' => 'Order not found'], 404);
             }
-        } else if ($transactionStatus == 'pending') {
-            // MENUNGGU
-            $order->update(['payment_status' => '1']);
-        }
 
-        return response()->json(['message' => 'Callback received successfully']);
+            $expectedGross = (int) round((float) $order->total_amount) + 4000;
+            $actualGross = (int) round((float) $grossAmount);
+            if ($actualGross !== $expectedGross) {
+                Log::warning('Midtrans callback rejected: gross_amount mismatch', [
+                    'order_id' => $orderId,
+                    'expected' => $expectedGross,
+                    'actual' => $actualGross,
+                ]);
+                return response()->json(['message' => 'Gross amount mismatch'], 400);
+            }
+
+            // Terminal states ('2' Completed, '3' Failed/Cancelled, '4' Refunded) are idempotent:
+            // ignore duplicate or out-of-order notifications to prevent stock inflation & status regression.
+            if (in_array((string) $order->payment_status, ['2', '3', '4'], true)) {
+                return response()->json(['message' => 'Callback already processed']);
+            }
+
+            if ($transactionStatus === 'settlement') {
+                $order->update(['payment_status' => '2']);
+            } elseif ($transactionStatus === 'capture') {
+                if ($fraudStatus === '' || $fraudStatus === 'accept') {
+                    $order->update(['payment_status' => '2']);
+                } elseif ($fraudStatus === 'challenge') {
+                    $order->update(['payment_status' => '1']);
+                }
+            } elseif (in_array($transactionStatus, ['expire', 'cancel', 'deny'], true)) {
+                $order->load('vendorOrders.orderItems.product');
+                $order->update(['payment_status' => '3']);
+
+                foreach ($order->vendorOrders as $vendorOrder) {
+                    if ($vendorOrder->shipping_status === 'pending') {
+                        $vendorOrder->update(['shipping_status' => 'cancelled']);
+                    }
+                    foreach ($vendorOrder->orderItems as $item) {
+                        if ($item->product) {
+                            $item->product->increment('stock_quantity', $item->quantity);
+                        }
+                    }
+                }
+            } elseif ($transactionStatus === 'pending') {
+                $order->update(['payment_status' => '1']);
+            }
+
+            return response()->json(['message' => 'Callback received successfully']);
+        });
     }
 }

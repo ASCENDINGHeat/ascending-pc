@@ -6,44 +6,63 @@ use App\Models\Product;
 use App\Models\Cart;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 
 class CartController extends Controller
 {
     public function addToCart(Request $request, $productId)
     {
+        $validated = $request->validate([
+            'quantity' => 'sometimes|integer|min:1',
+        ]);
+
         $userId = Auth::id();
-        $quantity = (int)$request->input('quantity', 1);
-        $product = Product::find($productId);
+        $quantity = (int) ($validated['quantity'] ?? 1);
 
-        if (!$product) {
-            return response()->json(['message' => 'Produk tidak ditemukan'], 404);
-        }
+        return DB::transaction(function () use ($productId, $userId, $quantity) {
+            $product = Product::where('id', $productId)->lockForUpdate()->first();
 
-        // Validasi Stok Habis Total
-        if ($product->stock_quantity <= 0) {
+            if (!$product) {
+                return response()->json(['message' => 'Produk tidak ditemukan'], 404);
+            }
+
+            if ($product->stock_quantity <= 0) {
+                return response()->json([
+                    'message' => 'Maaf, stok barang ini sedang habis.'
+                ], 400);
+            }
+
+            $condition = [
+                'product_id' => $product->id,
+                'user_id' => $userId,
+            ];
+
+            $cartItem = Cart::where($condition)->lockForUpdate()->first();
+            $newQuantity = ($cartItem ? $cartItem->quantity : 0) + $quantity;
+
+            if ($newQuantity > $product->stock_quantity) {
+                return response()->json([
+                    'message' => 'Stok tidak mencukupi. Sisa: ' . $product->stock_quantity
+                ], 400);
+            }
+
+            if ($cartItem) {
+                $cartItem->quantity = $newQuantity;
+                $cartItem->save();
+            } else {
+                $cartItem = Cart::create(array_merge($condition, [
+                    'quantity' => $quantity,
+                ]));
+            }
+
+            $cartItem->load('product');
+
             return response()->json([
-                'message' => 'Maaf, stok barang ini sedang habis.'
-            ], 400); // 400 Bad Request
-        }
-        $condition = [
-            'product_id' => $productId,
-            'user_id' => $userId,
-        ];
-
-        $cartItem = Cart::where($condition)->first();
-        if ($cartItem) {
-            $cartItem->increment('quantity', $request->quantity);
-        } else {
-
-            Cart::create(array_merge($condition, [
-                'quantity' => $request->quantity,
-            ]));
-        }
-        return response()->json([
-            'message' => 'ditambahkan',
-            'data' => $cartItem
-        ], 200);
+                'message' => 'ditambahkan',
+                'data' => $cartItem
+            ], 200);
+        });
     }
     public function index()
     {
@@ -71,7 +90,8 @@ class CartController extends Controller
         ]);
 
         // Cari item milik user
-        $cartItem = Cart::where('id', $id)
+        $cartItem = Cart::with('product')
+            ->where('id', $id)
             ->where('user_id', $userId)
             ->first();
 
@@ -90,11 +110,15 @@ class CartController extends Controller
             ], 200);
         }
 
+        if (!$cartItem->product) {
+            return response()->json(['message' => 'Produk tidak ditemukan'], 404);
+        }
+
         // Jika quantity > 0, Lanjut Update seperti biasa
         // Cek Stok dulu
         if ($cartItem->product->stock_quantity < $request->quantity) {
             return response()->json([
-                'message' => 'Stok tidak mencukupi. Sisa: ' . $cartItem->product->stock
+                'message' => 'Stok tidak mencukupi. Sisa: ' . $cartItem->product->stock_quantity
             ], 400);
         }
 

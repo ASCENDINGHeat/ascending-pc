@@ -217,17 +217,17 @@
     }
 
     // --- FIX: ADD TO CART VIA API ---
-    async function handleAddToCart() {
+    async function handleAddToCart(): Promise<boolean> {
         if (totalItems === 0) {
             alert('Belum ada komponen yang dipilih!');
-            return;
+            return false;
         }
 
         const token = localStorage.getItem('auth_token');
         if (!token) {
             alert('Anda harus login untuk menyimpan keranjang.');
-            goto('/web/login');
-            return;
+            goto('/login');
+            return false;
         }
 
         isAddingToCart = true;
@@ -268,6 +268,8 @@
         if (failCount > 0) {
             alert(`Gagal menambahkan ${failCount} item. Cek console atau stok barang.`);
         }
+
+        return successCount > 0;
     }
 
     async function handleDirectCheckout() {
@@ -277,7 +279,8 @@
         }
         
         // Wait for API Add process
-        await handleAddToCart();
+        const added = await handleAddToCart();
+        if (!added) return;
         
         // Redirect to Cart page to fetch the real Cart IDs from DB
         goto('/web/cart');

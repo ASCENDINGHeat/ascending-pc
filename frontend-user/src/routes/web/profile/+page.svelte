@@ -55,7 +55,7 @@
             userProfile = await userRes.json();
         } else {
             localStorage.removeItem('auth_token');
-            goto('/web/login');
+            goto('/login');
         }
     }
 
@@ -87,7 +87,7 @@
         const token = localStorage.getItem('auth_token');
         if (!token) {
             alert("Silakan login terlebih dahulu.");
-            goto('/web/login');
+            goto('/login');
             return;
         }
 
@@ -206,7 +206,7 @@
                     <button class="w-full text-left p-3 rounded-lg font-semibold text-sm text-red-500 hover:bg-red-50 transition-colors" 
                         on:click={() => {
                             localStorage.removeItem('auth_token');
-                            goto('/web/login');
+                            goto('/login');
                         }}>
                         🚪 Logout
                     </button>

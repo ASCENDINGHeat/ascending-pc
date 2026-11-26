@@ -39,9 +39,9 @@ All API endpoints are defined in `backend-API/routes/api.php` and mounted automa
 | **Products** | `GET` | `/api/product` | Public | `ProductController@index` | Active |
 | **Products** | `GET` | `/api/product/{id}` | Public | `ProductController@show` | Active |
 | **Products** | `POST` | `/api/product` | Sanctum + Vendor | `ProductController@store` | Active |
-| **Products** | `PUT\|PATCH` | `/api/product/{id}` | Sanctum + Vendor | `ProductController@update` | Partial (bugs) |
-| **Products** | `DELETE` | `/api/product/{id}` | Sanctum + Vendor | `ProductController@destroy` | **Broken (`500` missing method)** |
-| **Cart** | `POST` | `/api/cart/{productId}` | Sanctum | `CartController@addToCart` | Active (unvalidated qty) |
+| **Products** | `PUT\|PATCH` | `/api/product/{id}` | Sanctum + Vendor | `ProductController@update` | Active |
+| **Products** | `DELETE` | `/api/product/{id}` | Sanctum + Vendor | `ProductController@destroy` | Active |
+| **Cart** | `POST` | `/api/cart/{productId}` | Sanctum | `CartController@addToCart` | Active |
 | **Cart** | `GET` | `/api/cart` | Sanctum | `CartController@index` | Active |
 | **Cart** | `PUT` | `/api/cart/update/{cartId}` | Sanctum | `CartController@update` | Active |
 | **Cart** | `DELETE` | `/api/cart/delete/{cartId}` | Sanctum | `CartController@destroy` | Active |
@@ -50,7 +50,7 @@ All API endpoints are defined in `backend-API/routes/api.php` and mounted automa
 | **Wishlist** | `DELETE` | `/api/wishlist/{productId}` | Sanctum | `WishListController@destroy` | Active |
 | **Orders** | `POST` | `/api/checkout` | Sanctum | `OrderController@checkout` | Active |
 | **Orders** | `GET` | `/api/orders` | Sanctum | `OrderController@index` | Active |
-| **Orders** | `GET` | `/api/orders/{id}` | Sanctum | `OrderController@show` | **Broken (`403` binding bug)** |
+| **Orders** | `GET` | `/api/orders/{id}` | Sanctum | `OrderController@show` | Active |
 | **Vendor Orders** | `GET` | `/api/vendor/orders` | Sanctum + Vendor | `VendorOrderController@index` | Active |
 | **Vendor Orders** | `GET` | `/api/vendor/orders/{id}` | Sanctum + Vendor | `VendorOrderController@show` | Active |
 | **Vendor Orders** | `PATCH` | `/api/vendor/orders/{id}/status` | Sanctum + Vendor | `VendorOrderController@updateStatus` | Active |
@@ -187,8 +187,9 @@ Updates an existing product owned by the authenticated vendor.
 - **Notes**: When uploading files (`image`, `images[]`), send a `POST` request with `_method=PUT` so PHP parses `multipart/form-data`. Supports `remove_gallery_images[]` to remove gallery paths.
 
 ### `DELETE /api/product/{id}`
-> [!CAUTION]
-> **Currently Broken (`500 Internal Server Error`)**: `routes/api.php` registers `[ProductController::class, 'destroy']`, but `ProductController` does not define a `destroy()` method.
+Deletes a product owned by the authenticated vendor and removes its stored images from the `'public'` disk.
+- **Auth**: `Bearer` (must own product)
+- **Responses**: `200 OK`, `403 Unauthorized`, `404 Not Found`, or `409 Conflict` *(when historical `order_items` reference the product)*.
 
 ---
 
@@ -200,10 +201,10 @@ Updates an existing product owned by the authenticated vendor.
 > - `PUT /api/cart/update/{id}` and `DELETE /api/cart/delete/{id}` expect **`cart.id`** (primary key of the `cart` row).
 
 ### `POST /api/cart/{productId}`
-Adds a product to the user's cart (or increments quantity if already present).
+Adds a product to the user's cart (or increments quantity if already present) inside a database transaction with stock bounds enforcement.
 - **Auth**: `Bearer`
-- **Body**: `{ "quantity": 1 }` *(Must be explicitly sent; controller does not fall back to `1` if omitted)*
-- **Responses**: `200 OK`, `400 Bad Request` (`Stok habis`), `404 Not Found`.
+- **Body**: `{ "quantity": 1 }` (`sometimes|integer|min:1`, defaults to `1` if omitted)
+- **Responses**: `200 OK` (`{ "message": "ditambahkan", "data": { ... } }`), `400 Bad Request` (out of stock or exceeds available stock), `404 Not Found`, `422 Unprocessable Entity`.
 
 ### `GET /api/cart`
 Lists all items in the authenticated user's cart with `product` eager-loaded.
@@ -256,7 +257,7 @@ Explicitly deletes a product from the user's wishlist by `product_id`.
 ## 7. Checkout, Buyer Orders & Vendor Fulfillment
 
 ### `POST /api/checkout`
-Creates a `ParentOrder`, splits items by seller into `VendorOrder`s and `OrderItem`s, decrements `stock_quantity`, requests a Midtrans Snap token (`gross_amount = subtotal + 4000`), and deletes the checked-out cart rows.
+Atomically locks product rows, validates stock, creates a `ParentOrder`, splits items by seller into `VendorOrder`s and `OrderItem`s, decrements `stock_quantity`, requests a Midtrans Snap token (`gross_amount = subtotal + 4000`) outside database locks (rolling back reserved stock if Midtrans fails), and deletes the checked-out cart rows.
 - **Auth**: `Bearer`
 - **Body (`application/json`)**:
   ```json
@@ -280,8 +281,9 @@ Paginates (`15` per page) the authenticated buyer's `ParentOrder` records with `
 - **Auth**: `Bearer`
 
 ### `GET /api/orders/{id}`
-> [!CAUTION]
-> **Currently Broken (`403 Unauthorized`)**: Route parameter `{id}` does not match method signature `show(ParentOrder $parentOrder)`, so Laravel injects an empty `ParentOrder` instance where `$parentOrder->user_id` is `null`.
+Returns a single `ParentOrder` belonging to the authenticated buyer with `vendorOrders.orderItems.product` eager-loaded.
+- **Auth**: `Bearer`
+- **Responses**: `200 OK`, `403 Unauthorized`, or `404 Not Found`.
 
 ### `GET /api/vendor/orders`
 Paginates (`15` per page) `VendorOrder` records belonging to the authenticated seller with `orderItems.product` and `parentOrder.user` eager-loaded.

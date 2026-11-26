@@ -26,7 +26,9 @@
     // Reactive state untuk wishlist
     $: isWishlisted = $wishlist.some(i => i.id === product.id) || product.is_wishlisted || false;
 
-    const STORAGE_BASE = PUBLIC_STORAGE_URL.endsWith('/') ? PUBLIC_STORAGE_URL : `${PUBLIC_STORAGE_URL}/`;
+    const STORAGE_BASE = PUBLIC_STORAGE_URL
+        ? (PUBLIC_STORAGE_URL.endsWith('/') ? PUBLIC_STORAGE_URL : `${PUBLIC_STORAGE_URL}/`)
+        : 'http://127.0.0.1:8000/';
     $: imageUrl = product.image && product.image.startsWith('http') 
         ? product.image 
         : `${STORAGE_BASE}storage/${product.image}`;
@@ -41,7 +43,7 @@
         const token = getAuthToken();
         if (!token) {
             alert('Silakan login terlebih dahulu');
-            return goto('/web/login');
+            return goto('/login');
         }
 
         if (product.stock_quantity <= 0) {
@@ -62,20 +64,18 @@
 
             const data = await res.json();
 
-            if (res.ok) {
+            if (res.ok && data.data?.id) {
                 addToCart({
-                    id: String(data.data?.id || Date.now()),
+                    id: String(data.data.id),
                     product_id: product.id,
                     name: product.title,
-                    price: product.price,
+                    price: Number(product.price),
                     image: imageUrl,
                     quantity: 1,
                     stock: product.stock_quantity
                 });
-                // alert('Produk masuk keranjang!'); // Opsional: Matikan jika mengganggu
             } else {
                 console.error("Gagal tambah cart:", data.message);
-                // alert(data.message || 'Gagal menambahkan'); // Ganti dengan console.error
             }
         } catch (e) {
             console.error("Error Cart:", e);
@@ -90,7 +90,7 @@
         const token = getAuthToken();
         if (!token) {
             alert('Silakan login terlebih dahulu');
-            return goto('/web/login');
+            return goto('/login');
         }
 
         const wasWishlisted = isWishlisted;

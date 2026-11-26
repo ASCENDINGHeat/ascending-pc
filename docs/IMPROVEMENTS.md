@@ -8,98 +8,61 @@ This document captures all security vulnerabilities, runtime bugs, architectural
 
 | Priority | Tier Definition | Issue Count | Key Themes |
 | :--- | :--- | :---: | :--- |
-| **P0 — Critical** | Security vulnerabilities, data/money corruption, 500/404 hard blockers | **11** | Arbitrary file deletion, Midtrans secret logging & webhook replay stock inflation, overselling race conditions, missing `ProductController@destroy`, broken `/orders/{id}` binding, frontend build blocker (`.env`), `/web/login` 404s |
-| **P1 — High** | Broken user flows, API contract mismatches, schema/migration failures | **14** | Vendor dashboard `Rp NaN` / `Rp 0`, cart ID corruption, split-brain `auth.ts`/`user.ts` stores, mobile UX dead-end, broken migration `down()`, `composer.lock` PHP 8.4 lock mismatch, hardcoded commissions & sandbox URLs |
+| **P0 — Critical** | Security vulnerabilities, data/money corruption, 500/404 hard blockers | **11 (All Resolved)** | Arbitrary file deletion, Midtrans secret logging & webhook replay stock inflation, overselling race conditions, missing `ProductController@destroy`, broken `/orders/{id}` binding, frontend build blocker (`.env`), `/web/login` 404s, cart ID corruption |
+| **P1 — High** | Broken user flows, API contract mismatches, schema/migration failures | **14** | Vendor dashboard `Rp NaN` / `Rp 0`, split-brain `auth.ts`/`user.ts` stores, mobile UX dead-end, broken migration `down()`, `composer.lock` PHP 8.4 lock mismatch, hardcoded commissions & sandbox URLs |
 | **P2 — Medium** | Architecture, performance (`N+1`), incomplete features, security hardening | **11** | Vendor balance & `Payout` system unimplemented, missing product edit/delete UI, Snap.js modal integration, `httpOnly` cookie auth / token revocation, CORS wildcard+credentials, rate limiting, `N+1` queries |
 | **P3 — Low** | Code hygiene, dead boilerplate, Svelte 5 migration, automated tests & CI/CD | **8** | Remove `sverdle` & 11 dead category `.svelte` files, fix missing `/images/placeholder.*` & watermarked icon, root `.gitignore`, Pest & Playwright test suites, GitHub Actions CI |
 
 ---
 
-## P0 — Critical Issues (Fix Immediately)
+## P0 — Critical Issues (Resolved)
 
-### 1. [Security] Arbitrary File Deletion in `ProductController@update`
-- **Location**: `backend-API/app/Http/Controllers/ProductController.php:243-252`
-- **Problem**: `$pathsToRemove = $request->input('remove_gallery_images')` is passed directly to `Storage::disk('public')->delete($pathsToRemove)` without verifying that each path actually belongs to `$product->details['images']['gallery']`. Any authenticated vendor can delete arbitrary files (including other vendors' product images) on the `'public'` disk.
-- **Fix**: Intersect `$pathsToRemove` with `$currentGallery` before deleting:
-  ```php
-  $actualToRemove = array_values(array_intersect($currentGallery, $pathsToRemove));
-  $updatedDetails['images']['gallery'] = array_values(array_diff($currentGallery, $actualToRemove));
-  if (!empty($actualToRemove)) {
-      Storage::disk('public')->delete($actualToRemove);
-  }
-  ```
+> [!NOTE]
+> All 11 `P0` issues below have been implemented and verified across `backend-API/` and `frontend-user/`.
 
-### 2. [Security] Plaintext `MIDTRANS_SERVER_KEY` Logged & Raw Exceptions Returned
-- **Location**: `backend-API/app/Http/Controllers/OrderController.php:35, 155, 196`
-- **Problem**:
-  1. Line 35 (`Log::info('Config Server Key: ' . config('midtrans.server_key'))`) and Line 196 (`Log::info("My String to Hash: " . $hashedString)`) write the secret `MIDTRANS_SERVER_KEY` in plaintext to `storage/logs/laravel.log` on every checkout and webhook call.
-  2. Line 155 returns `'error' => $e->getMessage()` in `500` responses, leaking internal SQL/stack details to clients.
-- **Fix**: Remove debug `Log::info` lines exposing secrets and return generic error messages on `500` responses when `config('app.debug')` is `false`.
+### 1. [Resolved] [Security] Arbitrary File Deletion in `ProductController@update`
+- **Location**: `backend-API/app/Http/Controllers/ProductController.php`
+- **Resolution**: Intersected `remove_gallery_images` against `$updatedDetails['images']['gallery']` and excluded `http*` URLs before calling `Storage::disk('public')->delete()`.
 
-### 3. [Security & Integrity] Midtrans Webhook Replay Inflates Stock & Allows State Downgrade
-- **Location**: `backend-API/app/Http/Controllers/OrderController.php:185-234`
-- **Problem**:
-  1. **Empty Key Forgery**: If `MIDTRANS_SERVER_KEY` is unset (`null`/`""`), an attacker can compute `SHA512(order_id + status_code + gross_amount + "")` and spoof `settlement` webhooks.
-  2. **Timing Attack**: Uses `!==` instead of `hash_equals($mySignature, (string) $incomingSignature)`.
-  3. **Stock Inflation via Duplicate Webhooks**: On `expire`/`cancel`/`deny` (lines 221-228), `$item->product->increment('stock_quantity', $item->quantity)` runs **every time** the webhook arrives without checking if `$order->payment_status === '3'`, allowing repeated webhook deliveries to inflate stock indefinitely.
-  4. **Missing `fraud_status` Check**: Marks `capture` as paid (`'2'`) without checking `$request->fraud_status === 'accept'`.
-  5. **State Regression**: A delayed `pending` notification (lines 229-232) overwrites an already settled (`'2'`) or cancelled (`'3'`) order back to `'1'`.
-- **Fix**: Guard ` !empty($serverKey)`, use `hash_equals()`, wrap webhook processing in `DB::transaction()` with `ParentOrder::where('id', $orderId)->lockForUpdate()->first()`, enforce forward-only state transitions (`'1' -> '2'` or `'1' -> '3'`), verify `(int) $request->gross_amount === (int) ($order->total_amount + 4000)`, and cascade `'3'` to `vendor_orders.shipping_status = 'cancelled'`.
+### 2. [Resolved] [Security] Plaintext `MIDTRANS_SERVER_KEY` Logged & Raw Exceptions Returned
+- **Location**: `backend-API/app/Http/Controllers/OrderController.php`
+- **Resolution**: Removed debug `Log::info` calls leaking `MIDTRANS_SERVER_KEY` and gated `'error' => $e->getMessage()` behind `config('app.debug')`.
 
-### 4. [Data Integrity] Checkout Overselling Race Condition & Synchronous HTTP Inside DB Transaction
-- **Location**: `backend-API/app/Http/Controllers/OrderController.php:40-134`
-- **Problem**:
-  1. Lines 53-55 contain only a placeholder comment (`// ** (Inventory/Stock Check & Price Validation should occur here) **`). Checkout **never checks** whether `product.stock_quantity >= item.quantity`, nor does it lock product rows (`lockForUpdate()`), allowing negative inventory and concurrent overselling.
-  2. Line 50 calls `throw new ValidationException(['cart' => 'Your cart is empty.'])` — invalid constructor argument (expects `Validator`, not `array`), throwing a `500 TypeError` instead of `422`! Use `ValidationException::withMessages(...)`.
-  3. Line 120 calls external network I/O (`Snap::getSnapToken()`) while holding an open database transaction (`DB::beginTransaction()`).
-- **Fix**: Lock `Product` rows (`Product::whereIn('id', ...)->lockForUpdate()->get()`), validate sufficient stock and forbid self-purchase (`vendor.user_id !== $user->id`), commit the DB order creation first, then request the Midtrans `snap_token` outside the lock-heavy transaction (rolling back/cancelling if token generation fails).
+### 3. [Resolved] [Security & Integrity] Midtrans Webhook Replay Inflates Stock & Allows State Downgrade
+- **Location**: `backend-API/app/Http/Controllers/OrderController.php` (`receive`)
+- **Resolution**: Added non-empty `MIDTRANS_SERVER_KEY` guard, timing-safe `hash_equals()` signature check, `gross_amount` verification (`total_amount + 4000`), `DB::transaction()` + `lockForUpdate()`, terminal-state idempotency (`'2'`, `'3'`, `'4'`), `fraud_status` check on `capture`, and `vendor_orders.shipping_status = 'cancelled'` cascade on failed/expired payments.
 
-### 5. [Backend Crash] Unvalidated & Negative Quantities in `CartController@addToCart`
-- **Location**: `backend-API/app/Http/Controllers/CartController.php:14-48`
-- **Problem**: Line 16 defines `$quantity = $request->input('quantity', 1);` and **never uses it**! Lines 36 and 40 read `$request->quantity` directly with zero validation:
-  - Omitting `quantity` passes `null` into SQL `NOT NULL` (`500` error).
-  - Sending negative `quantity` (e.g., `-5`) passes validation, resulting in negative line totals during checkout and **increasing** product stock on `decrement()`!
-  - Exceeding `product.stock_quantity` is not checked on add.
-  - Line 45 returns `'data' => $cartItem`, which is `null` when creating a new cart row!
-- **Fix**: Validate `$validated = $request->validate(['quantity' => 'sometimes|integer|min:1'])`, check total cart quantity (`existing + added <= product.stock_quantity`), assign `$cartItem = Cart::create(...)`, and return `201`/`200` with `$cartItem`.
+### 4. [Resolved] [Data Integrity] Checkout Overselling Race Condition & Synchronous HTTP Inside DB Transaction
+- **Location**: `backend-API/app/Http/Controllers/OrderController.php` (`checkout`)
+- **Resolution**: Replaced invalid `new ValidationException([...])` with `ValidationException::withMessages(...)`, locked `Product` rows (`orderBy('id')->lockForUpdate()`), validated aggregated stock per `product_id`, committed the DB reservation before calling `Snap::getSnapToken()`, added compensating stock/order rollback if Midtrans fails, and made `redirect_url` respect `config('midtrans.is_production')`.
 
-### 6. [Backend Crash] Missing `ProductController@destroy` (`500 BadMethodCallException`)
-- **Location**: `backend-API/routes/api.php:26`, `backend-API/app/Http/Controllers/ProductController.php`
-- **Problem**: `Route::delete('/product/{id}', [ProductController::class, 'destroy'])` is registered, but `ProductController` ends at `update()` and has no `destroy()` method. Also, `update()` (line 177-178) does not check `if (!$product)` before accessing `$product->vendor_id`, throwing a `500` error on non-existent IDs.
-- **Fix**: Add `if (!$product) return response()->json(['message' => 'Product not found'], 404);` in `update()`, and implement `destroy($id)` verifying vendor ownership, cleaning up stored images (or using `SoftDeletes` when `order_items` reference the product).
+### 5. [Resolved] [Backend Crash] Unvalidated & Negative Quantities in `CartController@addToCart`
+- **Location**: `backend-API/app/Http/Controllers/CartController.php`
+- **Resolution**: Validated `quantity` (`sometimes|integer|min:1`, default `1`), enforced cumulative `newQuantity <= product.stock_quantity` inside `DB::transaction()` with row locks, assigned `$cartItem = Cart::create(...)` so `data` is always returned with its primary key, and fixed `$cartItem->product->stock_quantity` in `update()`.
 
-### 7. [Backend Bug] `GET /api/orders/{id}` Always Returns `403 Unauthorized`
-- **Location**: `backend-API/routes/api.php:37`, `backend-API/app/Http/Controllers/OrderController.php:170-181`
-- **Problem**: Route defines `/orders/{id}`, whereas controller signature is `public function show(ParentOrder $parentOrder)`. Because `{id}` does not match `$parentOrder`, Laravel implicit route-model binding injects an empty `new ParentOrder()` (`user_id === null`), failing `$parentOrder->user_id !== auth()->id()` 100% of the time.
-- **Fix**: Rename route parameter to `/orders/{parentOrder}` (or change `show($id)` to use `ParentOrder::findOrFail($id)`).
+### 6. [Resolved] [Backend Crash] Missing `ProductController@destroy` & Null Crash in `ProductController@update`
+- **Location**: `backend-API/app/Http/Controllers/ProductController.php`
+- **Resolution**: Added `404` check before reading `$product->vendor_id` in `update()`, enforced `mimes:jpeg,png,jpg,webp` on `update()` images, and implemented `destroy($id)` with vendor ownership check, `OrderItem` history guard (`409 Conflict`), and `'public'` disk image cleanup.
 
-### 8. [Frontend Build Blocker] Missing `.env` & `.env.example` Breaks Compilation
-- **Location**: `frontend-user/` (13 files importing `'$env/static/public'`)
-- **Problem**: Neither `.env` nor `.env.example` exists in `frontend-user/`. Static imports of `PUBLIC_API_URL` and `PUBLIC_STORAGE_URL` cause `svelte-kit sync`, `npm run dev`, `npm run check`, and `npm run build` to fail out of the box.
-- **Fix**: Commit `frontend-user/.env.example` with documented defaults (`PUBLIC_API_URL=http://127.0.0.1:8000/api`, `PUBLIC_STORAGE_URL=http://127.0.0.1:8000`) or migrate to `$env/dynamic/public` with safe fallbacks in a centralized `src/lib/api/client.ts` module.
+### 7. [Resolved] [Backend Bug] `GET /api/orders/{id}` Always Returns `403 Unauthorized`
+- **Location**: `backend-API/app/Http/Controllers/OrderController.php` (`show`)
+- **Resolution**: Changed `show($id)` to resolve `ParentOrder::find($id)` with explicit `404` and `403` ownership checks matching `/orders/{id}`.
 
-### 9. [Frontend 404 Blocker] 8 Redirects Point to Non-Existent `/web/login`
-- **Location**:
-  - `frontend-user/src/lib/components/ProductCard.svelte:44, 93`
-  - `frontend-user/src/routes/web/co/+page.svelte:74, 127`
-  - `frontend-user/src/routes/web/profile/+page.svelte:58, 90, 209`
-  - `frontend-user/src/routes/web/simulasi-pc/+page.svelte:229`
-  - `frontend-user/src/routes/web/wishlist/+page.svelte:13`
-- **Problem**: Actual login route is `/login`, not `/web/login`. Unauthenticated users clicking Add to Cart, Wishlist, Checkout, Profile, or Logout hit a **404 Not Found** page.
-- **Fix**: Replace all `goto('/web/login')` calls with `goto('/login')`.
+### 8. [Resolved] [Frontend Build Blocker] Missing `.env` & `.env.example` Breaks Compilation
+- **Location**: `frontend-user/.env.example`
+- **Resolution**: Added `frontend-user/.env.example` (and local gitignored `.env`) defining `PUBLIC_API_URL` and `PUBLIC_STORAGE_URL`, plus safe fallback guards on `PUBLIC_STORAGE_URL`.
 
-### 10. [Frontend Bug] Cart Item ID Corruption Breaks Cart Update, Delete & Checkout
-- **Location**: `frontend-user/src/routes/+layout.svelte:79-86`, `src/routes/web/product/[id]/+page.svelte:113-119`, `src/lib/components/ProductCard.svelte:67`
-- **Problem**:
-  - `+layout.svelte` maps `GET /cart` items using `id: item.product_id` (wrong — should be `String(item.id)`), `item.product.name` (should be `title`), `item.product.image` (should be `image_url`), and omits `product_id`.
-  - `web/product/[id]/+page.svelte` pushes `id: product.id` into `$cart` instead of the created `cart.id` returned by `POST /cart/{id}`.
-  - Subsequent `PUT /cart/update/{id}`, `DELETE /cart/delete/{id}`, or `POST /checkout` calls send a `product_id` (or `Date.now()`) where the backend expects `cart.id`!
-- **Fix**: Centralize all cart mutations and `GET /cart` normalization inside `src/lib/stores/cart.ts` so `CartItem` has a single canonical mapper.
+### 9. [Resolved] [Frontend 404 Blocker] 8 Redirects Point to Non-Existent `/web/login`
+- **Location**: `ProductCard.svelte`, `web/co/+page.svelte`, `web/profile/+page.svelte`, `web/simulasi-pc/+page.svelte`, `web/wishlist/+page.svelte`
+- **Resolution**: Updated all 8 unauthenticated redirects to `/login` and prevented `simulasi-pc` `handleDirectCheckout()` from overriding `/login` with `/web/cart`.
 
-### 11. [Backend Setup Blocker] Un-commented Note in `backend-API/.env.example`
+### 10. [Resolved] [Frontend Bug] Cart Item ID Corruption Breaks Cart Update, Delete & Checkout
+- **Location**: `src/lib/stores/cart.ts`, `src/routes/+layout.svelte`, `ProductCard.svelte`, `web/product/[id]/+page.svelte`, `CartDrawer.svelte`, `web/cart/+page.svelte`, `web/co/+page.svelte`
+- **Resolution**: Introduced canonical `mapApiCartItem()` in `cart.ts`, ensured `ProductCard` and `product/[id]` store `String(result.data.id)` (`cart.id`) rather than `product.id` or `Date.now()`, cast `selected_cart_ids` to integers on checkout, and pruned checked-out items from `$cart` on navigation.
+
+### 11. [Resolved] [Backend Setup Blocker] Un-commented Note in `backend-API/.env.example`
 - **Location**: `backend-API/.env.example:67`
-- **Problem**: `MIDTRANS_SERVER_KEY=SB-Mid-server-xxxxxxxxxxxx  <-- Ganti dengan Key Sandbox Anda` lacks a `#` comment prefix, causing `Dotenv\Exception\InvalidFileException` when copied to `.env`.
-- **Fix**: Prefix inline comment with `#` (`MIDTRANS_SERVER_KEY=SB-Mid-server-xxxxxxxxxxxx # Ganti dengan Key Sandbox Anda`).
+- **Resolution**: Prefixed inline note on `MIDTRANS_SERVER_KEY` with `#` so `vlucas/phpdotenv` parses `.env` cleanly.
 
 ---
 

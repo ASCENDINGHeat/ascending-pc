@@ -10,7 +10,7 @@
 
 	onMount(async () => {
         if (!$isLoggedIn) {
-            goto('/web/login');
+            goto('/login');
             return;
         }
         await fetchWishlist();

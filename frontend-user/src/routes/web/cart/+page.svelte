@@ -2,7 +2,7 @@
     import { goto } from '$app/navigation';
     import { onMount } from 'svelte';
     // Import selectedItemIds dari store
-    import { cart, selectedItemIds } from '$lib/stores/cart';
+    import { cart, selectedItemIds, mapApiCartItem } from '$lib/stores/cart';
     import { PUBLIC_API_URL } from '$env/static/public';
 
     let cartItems: any[] = [];
@@ -29,21 +29,21 @@
         loading = true;
         try {
             const token = localStorage.getItem('auth_token');
+            if (!token) {
+                cart.set([]);
+                return;
+            }
             const res = await fetch(`${PUBLIC_API_URL}/cart`, {
                  headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
             });
             if (res.ok) {
                 const data = await res.json();
-                // Mapping ID Cart ke store
-                cart.set(data.data.map((item: any) => ({
-                    id: String(item.id), // Pastikan string
-                    product_id: item.product_id,
-                    name: item.product.title,
-                    price: Number(item.product.price),
-                    image: item.product.image_url,
-                    quantity: item.quantity,
-                    stock: item.product.stock_quantity
-                })));
+                const mapped = (data.data || []).map(mapApiCartItem);
+                cart.set(mapped);
+                // Prune any stale selectedIds that no longer exist in cart
+                const validIdSet = new Set(mapped.map((i: any) => String(i.id)));
+                selectedIds = selectedIds.filter(id => validIdSet.has(String(id)));
+                selectedItemIds.set(selectedIds);
             }
         } catch (e) {
             console.error("Gagal fetch keranjang", e);
